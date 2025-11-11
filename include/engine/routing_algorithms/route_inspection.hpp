@@ -2,12 +2,19 @@
 #define OSRM_ROUTE_INSPECTION_HPP
 
 #include "util/bgl_graph_adaptor.hpp"
+#include "util/coordinate.hpp"
+#include "util/exception.hpp"
 #include "util/log.hpp"
 #include "util/node_based_graph.hpp"
 #include "util/typedefs.hpp"
 
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/point_xy.hpp>
+#include <boost/geometry/geometries/polygon.hpp>
 #include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/dijkstra_shortest_paths.hpp>
+#include <boost/graph/filtered_graph.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
 #include <boost/range/adaptors.hpp>
@@ -15,6 +22,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <optional>
 #include <stack>
 #include <tuple>
 #include <vector>
@@ -28,32 +36,41 @@ namespace detail
 //-------------------------------------------------------------------------------------------------
 // Common types
 //-------------------------------------------------------------------------------------------------
-using BglGraph = util::BglNodeBasedDynamicGraph;
-using Vertex = BglGraph::Vertex;
-using Edge = BglGraph::Edge;
-using Weight = BglGraph::Weight;
+
+using BaseGraph = util::BglNodeBasedDynamicGraph;
+using BaseNode = BaseGraph::Vertex;
+using BaseEdge = BaseGraph::Edge;
+using Weight = BaseGraph::Weight;
+
+// Main graph type (BGL based) used for route inspection implementation
+using BglGraph = boost::adjacency_list<boost::vecS,
+                                       boost::vecS,
+                                       boost::directedS,
+                                       boost::property<boost::vertex_name_t, BaseNode>,
+                                       boost::property<boost::edge_weight_t, EdgeWeight>>;
 
 // Represents a sequence of nodes (vertices)
-using Path = std::vector<Vertex>;
+template <typename Vertex> using Path = std::vector<Vertex>;
 
 using NodeDegreeDelta = int16_t;
 // Stores difference between incoming (negative) and outgoing (positive) edges for nodes where array
 // index is node id
 using NodeDegreeDeltaArray = std::vector<NodeDegreeDelta>;
 
-// Represents shorttest path and its total cost
-struct ShortestPath
+// Represents shortest path and its total cost
+template <typename Vertex> struct ShortestPath
 {
-    Path path;
+    Path<Vertex> path;
     Weight cost{INVALID_EDGE_WEIGHT};
 };
 
-struct PathMatrix
+// Represents shortest paths between all sources/targets
+template <typename Vertex> struct PathMatrix
 {
     struct Column
     {
         Vertex target;
-        ShortestPath path;
+        ShortestPath<Vertex> path;
     };
 
     struct Row
@@ -81,7 +98,7 @@ using MinCostFlow = std::vector<EdgeFlow>;
 //-------------------------------------------------------------------------------------------------
 
 // Checks whether directed graph is strongly connected
-inline bool isStronglyConnectedGraph(const BglGraph &g)
+template <typename Graph> bool isStronglyConnectedGraph(const Graph &g)
 {
     using namespace boost;
     // TODO consider using TarjanSCC from osrm::util instead
@@ -92,7 +109,7 @@ inline bool isStronglyConnectedGraph(const BglGraph &g)
 }
 
 // Collects edge degree delta for all nodes in the graph
-inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const BglGraph &g)
+template <typename Graph> NodeDegreeDeltaArray collectNodeDegreeDeltas(const Graph &g)
 {
     NodeDegreeDeltaArray deltas(num_vertices(g));
     auto [b, e] = edges(g);
@@ -118,13 +135,14 @@ inline bool isEulerianGraph(const NodeDegreeDeltaArray &deltas)
 }
 
 // Checks whether graph is Eulerian
-inline bool isEulerianGraph(const BglGraph &g)
+template <typename Graph> bool isEulerianGraph(const Graph &g)
 {
     return isEulerianGraph(collectNodeDegreeDeltas(g));
 }
 
 // Finds Eulerian circuit on directed Eulerian graph using Hierholzer’s algorithm
-inline Path findEulerianCircuit(const BglGraph &g, const Vertex source)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+Path<Vertex> findEulerianCircuit(const Graph &g, const Vertex source)
 {
     using EdgeIt = decltype(out_edges(source, g).first);
 
@@ -137,7 +155,7 @@ inline Path findEulerianCircuit(const BglGraph &g, const Vertex source)
         unusedEdges[*vb] = out_edges(*vb, g).first;
     }
     std::stack<Vertex> st;
-    Path circuit;
+    Path<Vertex> circuit;
     circuit.reserve(nbOfVertices);
 
     // find circuit
@@ -176,10 +194,11 @@ inline Path findEulerianCircuit(const BglGraph &g, const Vertex source)
 //-------------------------------------------------------------------------------------------------
 
 // Finds shortest paths from source s to all graph's vertices
-inline void shortestPaths(const BglGraph &g,
-                          const Vertex s,
-                          std::vector<Vertex> &preds,
-                          std::vector<Weight> &dists)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+void shortestPaths(const Graph &g,
+                   const Vertex s,
+                   std::vector<Vertex> &preds,
+                   std::vector<Weight> &dists)
 {
     BOOST_ASSERT(s < num_vertices(g));
     boost::dijkstra_shortest_paths(g,
@@ -190,11 +209,12 @@ inline void shortestPaths(const BglGraph &g,
 }
 
 // Extracts shortest paths from s to t using result of shortestPaths()
-inline Path extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
+template <typename Vertex>
+Path<Vertex> extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
 {
-    Path result;
+    Path<Vertex> result;
     // initially reserve x2 of nodes between s and t
-    result.reserve(std::max(16U, (std::max(s, t) - std::min(s, t)) * 2));
+    result.reserve(std::max<size_t>(16, (t > s ? t - s : s - t) * 2));
     Vertex curNode{t};
     while (curNode != s)
     {
@@ -212,8 +232,9 @@ inline Path extractPath(const std::vector<Vertex> &preds, const Vertex s, const 
 }
 
 // Finds shortest paths from a source vertex to all target vertices
-inline std::vector<ShortestPath>
-oneToMany(const BglGraph &g, const Vertex source, const std::vector<Vertex> &targets)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+std::vector<ShortestPath<Vertex>>
+oneToMany(const Graph &g, const Vertex source, const std::vector<Vertex> &targets)
 {
     // prepare maps for predecessors and distances
     std::vector<Vertex> preds(num_vertices(g));
@@ -223,7 +244,7 @@ oneToMany(const BglGraph &g, const Vertex source, const std::vector<Vertex> &tar
     shortestPaths(g, source, preds, dists);
 
     // extract paths for all targets
-    std::vector<ShortestPath> paths;
+    std::vector<ShortestPath<Vertex>> paths;
     paths.reserve(targets.size());
     for (auto t : targets)
     {
@@ -243,11 +264,11 @@ oneToMany(const BglGraph &g, const Vertex source, const std::vector<Vertex> &tar
 }
 
 // Finds shortest paths between all sources and targets
-inline PathMatrix manyToMany(const BglGraph &g,
-                             const std::vector<Vertex> &sources,
-                             const std::vector<Vertex> &targets)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+PathMatrix<Vertex>
+manyToMany(const Graph &g, const std::vector<Vertex> &sources, const std::vector<Vertex> &targets)
 {
-    PathMatrix m;
+    PathMatrix<Vertex> m;
     m.rows.reserve(sources.size());
     for (auto s : sources)
     {
@@ -277,9 +298,10 @@ inline PathMatrix manyToMany(const BglGraph &g,
  * @param maxCapacity total amount of surplus
  * @return auto built graph together with super-source and super-sink nodes
  */
-inline auto buildMcfGraph(const PathMatrix &pathMatrix,
-                          const NodeDegreeDeltaArray &deltas,
-                          const uint32_t maxCapacity = std::numeric_limits<uint32_t>::max())
+template <typename Vertex>
+auto buildMcfGraph(const PathMatrix<Vertex> &pathMatrix,
+                   const NodeDegreeDeltaArray &deltas,
+                   const uint32_t maxCapacity = std::numeric_limits<uint32_t>::max())
 {
     using namespace boost;
 
@@ -371,9 +393,10 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
  * @param maxCapacity total amount of surplus
  * @return MinCostFlow edges with positive flow
  */
-inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
-                                    const NodeDegreeDeltaArray &deltas,
-                                    const size_t maxCapacity = std::numeric_limits<size_t>::max())
+template <typename Vertex>
+MinCostFlow solveMinCostFlow(const PathMatrix<Vertex> &pathMatrix,
+                             const NodeDegreeDeltaArray &deltas,
+                             const size_t maxCapacity = std::numeric_limits<size_t>::max())
 {
     using namespace boost;
 
@@ -401,9 +424,6 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
         // add edge with positive flow to result
         if (auto flow = capacityMap[e] - residualCapacityMap[e]; flow > 0)
         {
-            std::cout << source(e, g) << " -> " << target(e, g) << " | flow " << flow << " | cost "
-                      << get(edge_weight, g)[e] << "\n";
-
             result.emplace_back(vertexToIdxMap[s], vertexToIdxMap[t], flow);
         }
     }
@@ -413,7 +433,8 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
 
 // Add deficit edges to imbalanced graph through solving min-cost flow problem to make graph
 // Eulerian
-inline bool augmentImbalancedGraph(BglGraph &g, NodeDegreeDeltaArray &deltas)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+bool augmentImbalancedGraph(Graph &g, NodeDegreeDeltaArray &deltas)
 {
     // collect surplus (delta < 0) and deficit (delta > 0) nodes
     // NOTE: normally for MCF nodes with delta > 0 become surplus nodes but, for convenience, we
@@ -421,8 +442,8 @@ inline bool augmentImbalancedGraph(BglGraph &g, NodeDegreeDeltaArray &deltas)
     std::vector<Vertex> surplusNodes, deficitNodes;
     auto totalSurplus{0U}, totalDeficit{0U};
     // assume only half of nodes are either surplus or deficit ones
-    surplusNodes.reserve(std::min(16UL, deltas.size() / 4));
-    deficitNodes.reserve(std::min(16UL, deltas.size() / 4));
+    surplusNodes.reserve(std::min<size_t>(16, deltas.size() / 4));
+    deficitNodes.reserve(std::min<size_t>(16, deltas.size() / 4));
     for (const auto [i, delta] : boost::adaptors::index(deltas))
     {
         if (delta < 0)
@@ -471,8 +492,10 @@ inline bool augmentImbalancedGraph(BglGraph &g, NodeDegreeDeltaArray &deltas)
             {
                 auto u = *std::prev(it);
                 auto v = *it;
-                Weight weight = g.GetWeight(g.GetEdge(u, v));
-                add_edge(u, v, weight, g);
+                auto [baseEdge, found] = edge(u, v, g);
+                BOOST_ASSERT(found);
+                // duplicate edge
+                add_edge(u, v, get(boost::edge_weight, g, baseEdge), g);
                 // adjust degree deltas
                 ++deltas[u];
                 --deltas[v];
@@ -484,21 +507,77 @@ inline bool augmentImbalancedGraph(BglGraph &g, NodeDegreeDeltaArray &deltas)
 }
 
 //-------------------------------------------------------------------------------------------------
-// Main route inspection finder
+// Main route inspection search
 //-------------------------------------------------------------------------------------------------
 
-// Route inspection (directed Chinese Postman Problem) solver
-inline Path routeInspectionImpl(BglGraph &g, const Vertex s)
+struct True
 {
-    // it's assumed graph is strongly connnected
-    BOOST_ASSERT_MSG(isStronglyConnectedGraph(g), "Graph is not strongly connected\n");
+    template <typename... Args> constexpr bool operator()(Args &&...) const { return true; }
+};
 
-    if (s >= num_vertices(g))
+// Returns a new subgraph BglGraph produced from BaseGraph by applying edge filter while
+// BFS-traversing it from the start node
+template <typename EdgeFilter = True>
+BglGraph buildBglGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter edgeFilter = {})
+{
+    using namespace boost;
+
+    using Vertex = graph_traits<BglGraph>::vertex_descriptor;
+    using FilteredGraph = filtered_graph<BaseGraph, EdgeFilter>;
+
+    BglGraph out;
+
+    struct BglGraphBuilderVis : default_bfs_visitor
     {
-        util::Log(logDEBUG) << "Invalid source vertex s=" << s
-                            << " with num_vertices=" << num_vertices(g);
-        return {};
+        using V = graph_traits<FilteredGraph>::vertex_descriptor;
+        using E = graph_traits<FilteredGraph>::edge_descriptor;
+
+        BglGraphBuilderVis(BglGraph &o, const Vertex start) : default_bfs_visitor(), out{o}
+        {
+            vmap[add_vertex(start, out)] = start;
+        }
+
+        // before iterating edges
+        void examine_vertex(const V u, const FilteredGraph &) { curVertex = vmap[u]; }
+
+        // new vertex and edge
+        void tree_edge(const E e, const FilteredGraph &fg)
+        {
+            auto tv = target(e, fg);
+            Vertex newVertex = add_vertex(tv, out);
+            vmap[tv] = newVertex;
+            add_edge(curVertex, newVertex, get(edge_weight, fg, e), out);
+        }
+
+        // new edge only
+        void non_tree_edge(const E e, const FilteredGraph &fg)
+        {
+            add_edge(curVertex, vmap[target(e, fg)], get(edge_weight, fg, e), out);
+        }
+
+        BglGraph &out;
+        std::unordered_map<V, Vertex> vmap; // old->new vertex mappings
+        Vertex curVertex;
+    };
+
+    FilteredGraph fg{g, edgeFilter};
+    // traverse and build a subgraph
+    breadth_first_search(fg, start, visitor(BglGraphBuilderVis{out, start}));
+
+    // verify resulting graph is strongly connected
+    if (!isStronglyConnectedGraph(out))
+    {
+        throw util::exception{"Resulting BglGraph is not strongly connected"};
     }
+
+    return out;
+}
+
+// Route inspection (directed Chinese Postman Problem) solver
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+Path<Vertex> routeInspectionImpl(Graph &g, const Vertex s)
+{
+    BOOST_ASSERT_MSG(isStronglyConnectedGraph(g), "Graph is not strongly connected\n");
 
     // collect node degree deltas
     auto deltas = collectNodeDegreeDeltas(g);
@@ -528,6 +607,65 @@ inline Path routeInspectionImpl(BglGraph &g, const Vertex s)
     return {};
 }
 
+//-------------------------------------------------------------------------------------------------
+// Polygon restriction utils
+//-------------------------------------------------------------------------------------------------
+
+namespace bg = boost::geometry;
+
+using Point = bg::model::d2::point_xy<decltype(util::Coordinate::lon)::value_type>;
+using Polygon = bg::model::polygon<Point>;
+
+// Converts util::Coordinate to Point
+inline Point toPoint(const util::Coordinate c) noexcept
+{
+    return Point{c.lon.__value, c.lat.__value};
+}
+
+// Creates a Polygon from a list of points
+inline Polygon createPolygon(const std::vector<util::Coordinate> &points,
+                             const double areaLimit = 0)
+{
+    if (points.size() < 3 || points.front() != points.back())
+    {
+        throw util::exception{"List of input points results in an invalid polygon"};
+    }
+
+    Polygon polygon;
+    for (auto p : points)
+    {
+        bg::append(polygon, toPoint(p));
+    }
+
+    if (areaLimit > 0)
+    {
+        // TODO: consider using util::computeArea
+        if (auto a = bg::area(polygon); a > areaLimit)
+        {
+            throw util::exception{"Polygon area is too big: " + std::to_string(a)};
+        }
+    }
+
+    return polygon;
+}
+
+// Returns true if coordinate is inside a polygon (polygon edges count as "outside")
+inline bool isInsidePolygon(const Polygon &polygon, const Point point)
+{
+    return bg::within(point, polygon);
+}
+
+// BaseGraph edge filter based on the area inside a polygon
+struct PolygonFilter
+{
+    bool operator()(const BaseEdge &) const
+    {
+        // TODO fetch edge endpoint
+        return isInsidePolygon(*polygon, Point{});
+    }
+    const Polygon *polygon{nullptr};
+};
+
 } // namespace detail
 
 /**
@@ -536,19 +674,65 @@ inline Path routeInspectionImpl(BglGraph &g, const Vertex s)
  *
  * @param graph directed node-based dynamic graph
  * @param source starting NodeID for a node inside the graph
+ * @param polygonPoints list of polygon points limiting route inspection area
  * @return std::vector<NodeID> resulting closed path as a list of node IDs (empty if not found)
  */
-inline std::vector<NodeID> routeInspection(util::NodeBasedDynamicGraph &graph, const NodeID source)
+inline std::vector<NodeID> routeInspection(util::NodeBasedDynamicGraph &graph,
+                                           const NodeID source,
+                                           const std::vector<util::Coordinate> &polygonPoints = {})
 {
     using namespace util;
-    using BglGraph = detail::BglGraph;
+    using namespace detail;
 
-    // prepare input data
-    BglGraph g{graph};
-    const auto s = static_cast<detail::Vertex>(source);
+    using Vertex = boost::graph_traits<BglGraph>::vertex_descriptor;
 
-    // run route inspection
-    const auto path = detail::routeInspectionImpl(g, s);
+    static constexpr double MAX_POLYGON_AREA = 0;
+
+    // verify input
+    const auto s = static_cast<BaseNode>(source);
+    std::optional<Polygon> polygon;
+    if (!polygonPoints.empty())
+    {
+        try
+        {
+            polygon = createPolygon(polygonPoints, MAX_POLYGON_AREA);
+            // if (!isInsidePolygon(polygon, toPoint(start)))
+            // {
+            //     throw exception{"Start point should be inside the polygon"};
+            // }
+        }
+        catch (const util::exception &e)
+        {
+            Log(logDEBUG) << "Input polygon is rejected: " << e.what();
+            return {};
+        }
+    }
+
+    // prepare graph data
+    BglNodeBasedDynamicGraph baseGraph{graph};
+    BglGraph g;
+
+    try
+    {
+        if (polygon)
+        {
+            const PolygonFilter f{&polygon.value()};
+            g = buildBglGraph(baseGraph, s, f);
+        }
+        else
+        {
+            // no polygon provided
+            g = buildBglGraph(baseGraph, s);
+        }
+    }
+    catch (const exception &e)
+    {
+        Log(logDEBUG) << "BglGraph building failure: " << e.what();
+        return {};
+    }
+
+    // run route inspection from the source (0) vertex
+    const auto path = routeInspectionImpl(g, Vertex{0});
 
     // prepare final route result
     std::vector<NodeID> route;
@@ -556,7 +740,11 @@ inline std::vector<NodeID> routeInspection(util::NodeBasedDynamicGraph &graph, c
     std::transform(path.cbegin(),
                    path.cend(),
                    std::back_inserter(route),
-                   [&](const detail::Vertex v) { return static_cast<NodeID>(v); });
+                   [&](const Vertex v)
+                   {
+                       auto baseNode = get(boost::vertex_name, g, v);
+                       return static_cast<NodeID>(baseNode);
+                   });
     return route;
 }
 

@@ -29,7 +29,7 @@ BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
     g.InsertEdge(v2, v3, data);
     g.InsertEdge(v3, v1, data);
 
-    BOOST_TEST(!rad::isStronglyConnectedGraph(rad::BglGraph{g}));
+    BOOST_TEST(!rad::isStronglyConnectedGraph(rad::BaseGraph{g}));
 }
 
 BOOST_AUTO_TEST_CASE(test_shortest_path)
@@ -51,7 +51,7 @@ BOOST_AUTO_TEST_CASE(test_shortest_path)
     data.weight = EdgeWeight{100};
     auto e13 = g.InsertEdge(v1, v3, data);
 
-    rad::BglGraph bglGraph{g};
+    rad::BaseGraph bglGraph{g};
 
     BOOST_TEST_CONTEXT("Costly 1->3 edge")
     {
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph_trivial)
     g.InsertEdge(v1, v2, data);
     g.InsertEdge(v2, v3, data);
     g.InsertEdge(v3, v0, data);
-    BOOST_REQUIRE(rad::isEulerianGraph(rad::BglGraph{g}));
+    BOOST_REQUIRE(rad::isEulerianGraph(rad::BaseGraph{g}));
 
     const auto path = ra::routeInspection(g, source);
     BOOST_REQUIRE(path.size() == 5);
@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
     g.InsertEdge(v2, v3, data);
     g.InsertEdge(v3, v1, data);
     g.InsertEdge(v3, v2, data);
-    BOOST_REQUIRE(rad::isEulerianGraph(rad::BglGraph{g}));
+    BOOST_REQUIRE(rad::isEulerianGraph(rad::BaseGraph{g}));
 
     const auto path = ra::routeInspection(g, source);
     BOOST_REQUIRE(path.size() == 9);
@@ -154,9 +154,9 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
 
 BOOST_AUTO_TEST_CASE(test_route_inspection_trivial)
 {
-    // 0 <--> 1 --> 2 --> 3
-    //        ↑     ↑____/
-    //        |_________/
+    // 0 <--> 1 --> 2 <--> 3
+    //        ↑           /
+    //        |__________/
 
     NodeBasedDynamicGraph g;
     const NodeID source{0};
@@ -173,7 +173,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_trivial)
     g.InsertEdge(v2, v3, data);
     g.InsertEdge(v3, v1, data);
     g.InsertEdge(v3, v2, data);
-    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BglGraph{g}));
+    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BaseGraph{g}));
 
     const auto path = ra::routeInspection(g, source);
     BOOST_REQUIRE(path.size() == 8);
@@ -189,11 +189,11 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_trivial)
 
 BOOST_AUTO_TEST_CASE(test_route_inspection)
 {
-    // .----- 4      ____________
-    // ↓      ↑     ↓            |
-    // 0 <--> 1 --> 2 --> 3 <--> 5
-    //        ↑     ↑____/
-    //        |_________/
+    // .----- 4      _____________
+    // ↓      ↑     ↓             |
+    // 0 <--> 1 --> 2 <--> 3 <--> 5
+    //        ↑           /
+    //        |__________/
 
     NodeBasedDynamicGraph g;
     const NodeID source{0};
@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection)
     g.InsertEdge(v4, v0, data);
     g.InsertEdge(v5, v2, data);
     g.InsertEdge(v5, v3, data);
-    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BglGraph{g}));
+    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BaseGraph{g}));
 
     const auto path = ra::routeInspection(g, source);
 
@@ -226,9 +226,9 @@ BOOST_AUTO_TEST_CASE(test_route_inspection)
     BOOST_TEST(path[1] == v1);
     BOOST_TEST(path[2] == v2);
     BOOST_TEST(path[3] == v3);
-    BOOST_TEST(path[4] == v5);
-    BOOST_TEST(path[5] == v2);
-    BOOST_TEST(path[6] == v3);
+    BOOST_TEST(path[4] == v2);
+    BOOST_TEST(path[5] == v3);
+    BOOST_TEST(path[6] == v5);
     BOOST_TEST(path[7] == v2);
     BOOST_TEST(path[8] == v3);
     BOOST_TEST(path[9] == v5);
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_costing)
     auto e71 = g.InsertEdge(v7, v1, data);
     g.InsertEdge(v7, v8, data);
     g.InsertEdge(v8, v1, data);
-    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BglGraph{g}));
+    BOOST_REQUIRE(!rad::isEulerianGraph(rad::BaseGraph{g}));
 
     BOOST_TEST_CONTEXT("Equal weights")
     {

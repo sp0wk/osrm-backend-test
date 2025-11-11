@@ -38,13 +38,15 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
 
     // convenience methods
 
-    Edge GetEdge(Vertex u, Vertex v) const {
+    Edge GetEdge(Vertex u, Vertex v) const
+    {
         Edge e = g.FindEdge(u, v);
         BOOST_ASSERT(e != SPECIAL_EDGEID);
         return e;
     }
 
-    Weight GetWeight(Edge e) const {
+    Weight GetWeight(Edge e) const
+    {
         BOOST_ASSERT(e < g.GetEdgeCapacity());
         return g.GetEdgeData(e).weight;
     }
@@ -119,16 +121,33 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
         return BglGraphAdaptor::WeightMap{&g};
     }
 
+    friend auto get(boost::edge_weight_t, const BglGraphAdaptor &g, const Edge e)
+    {
+        return g.GetWeight(e);
+    }
+
     friend auto get(boost::vertex_index_t, const BglGraphAdaptor &)
     {
         // vertex descriptor is already an index
         return boost::typed_identity_property_map<Vertex>{};
     }
 
+    friend auto get(boost::vertex_index_t, const BglGraphAdaptor &, const Vertex u)
+    {
+        // vertex descriptor is already an index
+        return u;
+    }
+
     friend auto get(boost::edge_index_t, const BglGraphAdaptor &)
     {
         // edge descriptor is already an index
         return boost::typed_identity_property_map<Edge>{};
+    }
+
+    friend auto get(boost::edge_index_t, const BglGraphAdaptor &, const Edge e)
+    {
+        // edge descriptor is already an index
+        return e;
     }
 
   private:
@@ -161,6 +180,7 @@ template <> struct graph_traits<osrm::util::BglNodeBasedDynamicGraph>
     using edge_iterator = decltype(edges(std::declval<G>()).first);
     using out_edge_iterator =
         decltype(out_edges(std::declval<vertex_descriptor>(), std::declval<G>()).first);
+    using in_edge_iterator = void *; // not supported
 
     using vertices_size_type = decltype(num_vertices(std::declval<G>()));
     using edges_size_type = decltype(num_edges(std::declval<G>()));
