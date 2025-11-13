@@ -18,7 +18,8 @@ namespace osrm::util
 {
 
 // General template for BGL (Boost Graph Library) graph adaptor implementations
-template <typename GraphT, storage::Ownership Ownership> class BglGraphAdaptor;
+template <typename GraphT, storage::Ownership Ownership = storage::Ownership::View>
+class BglGraphAdaptor;
 
 // Specialization for directed NodeBasedDynamicGraph
 template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::View>
@@ -37,13 +38,6 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
     Graph &GetGraph() noexcept { return g; }
 
     // convenience methods
-
-    Edge GetEdge(Vertex u, Vertex v) const
-    {
-        Edge e = g.FindEdge(u, v);
-        BOOST_ASSERT(e != SPECIAL_EDGEID);
-        return e;
-    }
 
     Weight GetWeight(Edge e) const
     {
@@ -67,6 +61,15 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
     {
         const auto range = g.g.GetDirectedEdgeRange();
         return std::make_pair(std::cbegin(range), std::cend(range));
+    }
+
+    friend auto edge(const Vertex u, const Vertex v, const BglGraphAdaptor &g)
+    {
+        if (Edge e = g.g.FindEdge(u, v); e != SPECIAL_EDGEID)
+        {
+            return std::make_pair(e, true);
+        }
+        return std::make_pair(SPECIAL_EDGEID, false);
     }
 
     friend Vertex source(const Edge e, const BglGraphAdaptor &g) { return g.g.GetSource(e); }

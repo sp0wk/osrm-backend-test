@@ -37,17 +37,13 @@ namespace detail
 // Common types
 //-------------------------------------------------------------------------------------------------
 
-using BaseGraph = util::BglNodeBasedDynamicGraph;
-using BaseNode = BaseGraph::Vertex;
-using BaseEdge = BaseGraph::Edge;
-using Weight = BaseGraph::Weight;
-
 // Main graph type (BGL based) used for route inspection implementation
-using BglGraph = boost::adjacency_list<boost::vecS,
-                                       boost::vecS,
-                                       boost::directedS,
-                                       boost::property<boost::vertex_name_t, BaseNode>,
-                                       boost::property<boost::edge_weight_t, EdgeWeight>>;
+template <typename BaseNode>
+using RiGraph = boost::adjacency_list<boost::vecS,
+                                      boost::vecS,
+                                      boost::directedS,
+                                      boost::property<boost::vertex_name_t, BaseNode>,
+                                      boost::property<boost::edge_weight_t, EdgeWeight>>;
 
 // Represents a sequence of nodes (vertices)
 template <typename Vertex> using Path = std::vector<Vertex>;
@@ -61,7 +57,7 @@ using NodeDegreeDeltaArray = std::vector<NodeDegreeDelta>;
 template <typename Vertex> struct ShortestPath
 {
     Path<Vertex> path;
-    Weight cost{INVALID_EDGE_WEIGHT};
+    EdgeWeight cost{INVALID_EDGE_WEIGHT};
 };
 
 // Represents shortest paths between all sources/targets
@@ -198,7 +194,7 @@ template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_d
 void shortestPaths(const Graph &g,
                    const Vertex s,
                    std::vector<Vertex> &preds,
-                   std::vector<Weight> &dists)
+                   std::vector<EdgeWeight> &dists)
 {
     BOOST_ASSERT(s < num_vertices(g));
     boost::dijkstra_shortest_paths(g,
@@ -238,7 +234,7 @@ oneToMany(const Graph &g, const Vertex source, const std::vector<Vertex> &target
 {
     // prepare maps for predecessors and distances
     std::vector<Vertex> preds(num_vertices(g));
-    std::vector<Weight> dists(num_vertices(g), INVALID_EDGE_WEIGHT);
+    std::vector<EdgeWeight> dists(num_vertices(g), INVALID_EDGE_WEIGHT);
 
     // calculate shortest paths from source to all vertices
     shortestPaths(g, source, preds, dists);
@@ -510,65 +506,97 @@ bool augmentImbalancedGraph(Graph &g, NodeDegreeDeltaArray &deltas)
 // Main route inspection search
 //-------------------------------------------------------------------------------------------------
 
-struct True
+struct NoFilter
 {
     template <typename... Args> constexpr bool operator()(Args &&...) const { return true; }
 };
 
-// Returns a new subgraph BglGraph produced from BaseGraph by applying edge filter while
-// BFS-traversing it from the start node
-template <typename EdgeFilter = True>
-BglGraph buildBglGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter edgeFilter = {})
+// Builds a RI (route inspection) compatible node-based directed subgraph using following rules:
+// - Starts at the "start" node of the base graph
+// - Building a subgraph happens by BFS-traversing base graph
+// - EdgeFilter is applied to base graph's edges to filter them out from resulting subgraph
+// - Replaces EBG nodes/edges with corresponding NBG nodes/edges
+//   Example:
+//      EBG:           ->           NBG:
+//                                         o g
+//                                         |
+//              ↑                          o d
+//              | 3              f      c /|\ e      h
+//      2 <----- ----> 4    ->   o-------o-|-o-------o
+//              ↑ 1                       \|/
+//              |                          o b
+//                                         |
+//                                         o a
+//
+// Node mappings:   1 -> ab; 2 -> cf; 3 -> dg; 4 -> eh
+// Edge mappings:   1,2 -> bc; 1,3 -> bd; 1,4 -> be
+template <typename BaseGraph,
+          typename BaseNode = boost::graph_traits<BaseGraph>,
+          typename EdgeFilter = NoFilter>
+RiGraph<BaseNode>
+buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFilter = {})
 {
     using namespace boost;
 
-    using Vertex = graph_traits<BglGraph>::vertex_descriptor;
+    using RIG = RiGraph<BaseNode>;
+    using Vertex = graph_traits<RIG>::vertex_descriptor;
     using FilteredGraph = filtered_graph<BaseGraph, EdgeFilter>;
 
-    BglGraph out;
+    RIG out;
 
-    struct BglGraphBuilderVis : default_bfs_visitor
+    struct RiGraphBuilderVis : default_bfs_visitor
     {
         using V = graph_traits<FilteredGraph>::vertex_descriptor;
         using E = graph_traits<FilteredGraph>::edge_descriptor;
 
-        BglGraphBuilderVis(BglGraph &o, const Vertex start) : default_bfs_visitor(), out{o}
+        RiGraphBuilderVis(RIG &o, const BaseNode start) : default_bfs_visitor(), out{o}
         {
-            vmap[add_vertex(start, out)] = start;
+            // one EBG node -> two NBG nodes
+            // add start as a first NBG node
+            curVertex = add_vertex(start, out);
+            vmap[start].first = curVertex;
         }
 
         // before iterating edges
-        void examine_vertex(const V u, const FilteredGraph &) { curVertex = vmap[u]; }
+        void examine_vertex(const V u, const FilteredGraph &)
+        {
+            BOOST_ASSERT(vmap.contains(u));
+            auto &m = vmap[u];
+            // add second NBG node and connect it with the first
+            m.second = add_vertex(u, out);
+            // NOTE: EBG node itself will have 0 weight in NBG as only transition edges from this
+            // NBG node will contain EBG node's weight
+            add_edge(m.first, m.second, EdgeWeight{0}, out);
+            curVertex = m.second;
+        }
 
         // new vertex and edge
         void tree_edge(const E e, const FilteredGraph &fg)
         {
+            // add first NBG node
             auto tv = target(e, fg);
             Vertex newVertex = add_vertex(tv, out);
-            vmap[tv] = newVertex;
+            vmap[tv].first = newVertex;
+            // NBG's transition edge will contain EBG's node weight + turn penalty
             add_edge(curVertex, newVertex, get(edge_weight, fg, e), out);
         }
 
         // new edge only
         void non_tree_edge(const E e, const FilteredGraph &fg)
         {
-            add_edge(curVertex, vmap[target(e, fg)], get(edge_weight, fg, e), out);
+            // connect cur node to a previously added first NBG node
+            // NBG's transition edge will contain EBG's node weight + turn penalty
+            add_edge(curVertex, vmap[target(e, fg)].first, get(edge_weight, fg, e), out);
         }
 
-        BglGraph &out;
-        std::unordered_map<V, Vertex> vmap; // old->new vertex mappings
+        RIG &out;
+        std::unordered_map<V, std::pair<Vertex, Vertex>> vmap; // EBG-to-NBG vertex mappings
         Vertex curVertex;
     };
 
     FilteredGraph fg{g, edgeFilter};
     // traverse and build a subgraph
-    breadth_first_search(fg, start, visitor(BglGraphBuilderVis{out, start}));
-
-    // verify resulting graph is strongly connected
-    if (!isStronglyConnectedGraph(out))
-    {
-        throw util::exception{"Resulting BglGraph is not strongly connected"};
-    }
+    breadth_first_search(fg, start, visitor(RiGraphBuilderVis{out, start}));
 
     return out;
 }
@@ -626,10 +654,7 @@ inline Point toPoint(const util::Coordinate c) noexcept
 inline Polygon createPolygon(const std::vector<util::Coordinate> &points,
                              const double areaLimit = 0)
 {
-    if (points.size() < 3 || points.front() != points.back())
-    {
-        throw util::exception{"List of input points results in an invalid polygon"};
-    }
+    BOOST_ASSERT(points.size() > 2 && points.front() == points.back());
 
     Polygon polygon;
     for (auto p : points)
@@ -658,7 +683,7 @@ inline bool isInsidePolygon(const Polygon &polygon, const Point point)
 // BaseGraph edge filter based on the area inside a polygon
 struct PolygonFilter
 {
-    bool operator()(const BaseEdge &) const
+    template <typename BaseEdge> bool operator()(const BaseEdge &) const
     {
         // TODO fetch edge endpoint
         return isInsidePolygon(*polygon, Point{});
@@ -669,22 +694,70 @@ struct PolygonFilter
 } // namespace detail
 
 /**
- * @brief Runs route inspection algorithm on a directed node-based graph and returns resulting
+ * @brief Extracts original NodeIDs from the resulting path and creates final route result.
+ *
+ * @tparam Graph RI graph type used to create a closed path
+ * @tparam Vertex graph's vertex type
+ * @param g RI graph used to create a closed path
+ * @param path resulting closed path
+ * @return std::vector<NodeID> final route result
+ */
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+std::vector<NodeID> prepareFinalRoute(const Graph &g, const detail::Path<Vertex> &path)
+{
+    if (path.empty())
+    {
+        util::Log(logDEBUG) << "Resulting path is empty";
+        return {};
+    }
+
+    const auto toNodeID = [&g](const Vertex v)
+    {
+        auto baseNode = get(boost::vertex_name, g, v);
+        return static_cast<NodeID>(baseNode);
+    };
+
+    std::vector<NodeID> route;
+    route.reserve(path.size());
+
+    auto it = path.cbegin();
+    route.emplace_back(toNodeID(*it));
+    ++it;
+    for (; it != path.cend(); ++it)
+    {
+        auto n = toNodeID(*it);
+        // NBG based RiGraph has two nodes per EBG node, so we ignore duplication
+        if (route.back() != n)
+        {
+            route.emplace_back(n);
+        }
+    }
+
+    return route;
+}
+
+/**
+ * @brief Runs route inspection algorithm on a directed edge-based graph and returns resulting
  * closed path.
  *
- * @param graph directed node-based dynamic graph
+ * @tparam EdgeBasedGraph directed edge-based graph type
+ * @param graph directed edge-based graph
  * @param source starting NodeID for a node inside the graph
  * @param polygonPoints list of polygon points limiting route inspection area
  * @return std::vector<NodeID> resulting closed path as a list of node IDs (empty if not found)
  */
-inline std::vector<NodeID> routeInspection(util::NodeBasedDynamicGraph &graph,
-                                           const NodeID source,
-                                           const std::vector<util::Coordinate> &polygonPoints = {})
+template <typename EdgeBasedGraph>
+std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
+                                    const NodeID source,
+                                    const std::vector<util::Coordinate> &polygonPoints = {})
 {
     using namespace util;
     using namespace detail;
 
-    using Vertex = boost::graph_traits<BglGraph>::vertex_descriptor;
+    using BaseGraph = BglGraphAdaptor<EdgeBasedGraph>;
+    using BaseNode = boost::graph_traits<BaseGraph>::vertex_descriptor;
+    using RIG = RiGraph<BaseNode>;
+    using Vertex = boost::graph_traits<RIG>::vertex_descriptor;
 
     static constexpr double MAX_POLYGON_AREA = 0;
 
@@ -709,43 +782,31 @@ inline std::vector<NodeID> routeInspection(util::NodeBasedDynamicGraph &graph,
     }
 
     // prepare graph data
-    BglNodeBasedDynamicGraph baseGraph{graph};
-    BglGraph g;
+    BaseGraph baseGraph{graph};
+    RIG rig;
 
-    try
+    if (polygon)
     {
-        if (polygon)
-        {
-            const PolygonFilter f{&polygon.value()};
-            g = buildBglGraph(baseGraph, s, f);
-        }
-        else
-        {
-            // no polygon provided
-            g = buildBglGraph(baseGraph, s);
-        }
+        const PolygonFilter f{&polygon.value()};
+        rig = buildRiGraph(baseGraph, s, f);
     }
-    catch (const exception &e)
+    else
     {
-        Log(logDEBUG) << "BglGraph building failure: " << e.what();
+        // no polygon provided
+        rig = buildRiGraph(baseGraph, s);
+    }
+
+    // verify resulting graph is strongly connected
+    if (!isStronglyConnectedGraph(rig))
+    {
+        Log(logDEBUG) << "Resulting RiGraph is not strongly connected";
         return {};
     }
 
     // run route inspection from the source (0) vertex
-    const auto path = routeInspectionImpl(g, Vertex{0});
+    const auto path = routeInspectionImpl(rig, Vertex{0});
 
-    // prepare final route result
-    std::vector<NodeID> route;
-    route.reserve(path.size());
-    std::transform(path.cbegin(),
-                   path.cend(),
-                   std::back_inserter(route),
-                   [&](const Vertex v)
-                   {
-                       auto baseNode = get(boost::vertex_name, g, v);
-                       return static_cast<NodeID>(baseNode);
-                   });
-    return route;
+    return prepareFinalRoute(rig, path);
 }
 
 } // namespace osrm::engine::routing_algorithms
