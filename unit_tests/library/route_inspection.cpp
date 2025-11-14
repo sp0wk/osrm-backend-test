@@ -16,12 +16,22 @@ using BaseGraph = BglNodeBasedDynamicGraph;
 // helpers
 namespace
 {
+
 inline auto weight(int w)
 {
     NodeBasedDynamicGraph::EdgeData data;
     data.weight = EdgeWeight{w};
     return data;
 }
+
+template <typename G, typename V> void testEdge(const G &g, V u, V v, int expectedWeight)
+{
+    const auto [e, exists] = edge(u, v, g);
+    BOOST_REQUIRE(exists);
+    auto w = get(boost::edge_weight, g, e);
+    BOOST_TEST(w == EdgeWeight{expectedWeight});
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
@@ -355,7 +365,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_costing)
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_build_ri_graph_trivial)
+BOOST_AUTO_TEST_CASE(test_build_ri_graph_from_ebg_trivial)
 {
     // Input EBG:
     //    0      2      3      5
@@ -389,7 +399,7 @@ BOOST_AUTO_TEST_CASE(test_build_ri_graph_trivial)
     g.InsertEdge(v4, v1, w);
     g.InsertEdge(v4, v2, w);
     g.InsertEdge(v5, v6, weight(20));
-    g.InsertEdge(v6, v4, w);
+    g.InsertEdge(v6, v4, weight(15));
 
     BaseGraph baseGraph{g};
     BOOST_REQUIRE(rad::isStronglyConnectedGraph(baseGraph));
@@ -399,14 +409,89 @@ BOOST_AUTO_TEST_CASE(test_build_ri_graph_trivial)
     BOOST_TEST(rad::isStronglyConnectedGraph(rig));
     BOOST_TEST(num_vertices(rig) == 14);
     BOOST_TEST(num_edges(rig) == 17);
-    const auto [e78, e78_exists] = edge(7, 8, rig);
-    BOOST_REQUIRE(e78_exists);
-    auto e78_weight = get(boost::edge_weight, rig, e78);
-    BOOST_TEST(e78_weight == EdgeWeight{10});
-    const auto [e1112, e1112_exists] = edge(11, 12, rig);
-    BOOST_REQUIRE(e1112_exists);
-    auto e1112_weight = get(boost::edge_weight, rig, e1112);
-    BOOST_TEST(e1112_weight == EdgeWeight{20});
+
+    testEdge(rig, 7, 8, 10);
+    testEdge(rig, 11, 12, 20);
+    testEdge(rig, 13, 8, 15);
+}
+
+BOOST_AUTO_TEST_CASE(test_build_ri_graph_from_ebg_complex_intersection)
+{
+    // Input EBG:
+    //               <-------9-------↑
+    //               | ↑----5----->  |
+    //             11| 2          |  |
+    //               ↓ |          8  6
+    //     <---1---- *** <---10---↓  |
+    //     |         *** -----3----->|
+    //     4          ↑
+    //     ↓----7---->| 0
+    //
+    // Intersection connections: 0->1, 0->2, 0->3, 10->1, 10->2, 11->1, 11->2
+    //
+
+    // Expected NBG:
+    //                   20              16
+    //             21 o<-o<------------o<-o 15
+    //                |  o8------13>o     ↑
+    //                |  o 7        o 14  |
+    //                ↓  ↑          |     |
+    //             23 o->o 3        ↓     |
+    //  6            /  / \         o 18  |
+    //  o<-o<5-----2o←-/---o<22-----o 19  |
+    //  |            \ | /→o4--------9>o->o 10
+    //  ↓              o 1
+    //  o 11           ↑
+    //  o---------->o->o 0
+    //  12         17
+    //
+    // Intersection connections: 1->2, 1->3, 1->4, 22->2, 22->3, 23->2, 23->3
+
+    NodeBasedDynamicGraph g;
+
+    auto w = weight(2);
+    auto v0 = g.InsertNode();
+    auto v1 = g.InsertNode();
+    auto v2 = g.InsertNode();
+    auto v3 = g.InsertNode();
+    auto v4 = g.InsertNode();
+    auto v5 = g.InsertNode();
+    auto v6 = g.InsertNode();
+    auto v7 = g.InsertNode();
+    auto v8 = g.InsertNode();
+    auto v9 = g.InsertNode();
+    auto v10 = g.InsertNode();
+    auto v11 = g.InsertNode();
+    g.InsertEdge(v0, v1, weight(999)); // costly maneuver
+    g.InsertEdge(v0, v2, weight(10));  // slightly costly
+    g.InsertEdge(v0, v3, w);
+    g.InsertEdge(v1, v4, w);
+    g.InsertEdge(v2, v5, w);
+    g.InsertEdge(v3, v6, w);
+    g.InsertEdge(v4, v7, w);
+    g.InsertEdge(v5, v8, w);
+    g.InsertEdge(v6, v9, w);
+    g.InsertEdge(v7, v0, w);
+    g.InsertEdge(v8, v10, w);
+    g.InsertEdge(v9, v11, w);
+    g.InsertEdge(v10, v1, w);
+    g.InsertEdge(v10, v2, w);
+    g.InsertEdge(v11, v1, w);
+    g.InsertEdge(v11, v2, weight(100)); // costly uturn
+
+    BaseGraph baseGraph{g};
+    BOOST_REQUIRE(rad::isStronglyConnectedGraph(baseGraph));
+
+    auto rig = rad::buildRiGraph(baseGraph, v0);
+
+    BOOST_TEST(rad::isStronglyConnectedGraph(rig));
+    BOOST_TEST(num_vertices(rig) == 24);
+    BOOST_TEST(num_edges(rig) == 28);
+
+    // TODO optimize graph for RPP
+    testEdge(rig, 1, 2, 999);
+    testEdge(rig, 1, 3, 10);
+    testEdge(rig, 23, 3, 100);
 }
 
 BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_trivial)
@@ -463,6 +548,99 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_trivial)
     BOOST_TEST(path[5] == 4);
     BOOST_TEST(path[6] == 1);
     BOOST_TEST(path[7] == 0);
+}
+
+BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_complex_intersection)
+{
+    // Input EBG:
+    //               <-------9-------↑
+    //               | ↑----5----->  |
+    //             11| 2          |  |
+    //               ↓ |          8  6
+    //     <---1---- *** <---10---↓  |
+    //     |         *** -----3----->|
+    //     4          ↑
+    //     ↓----7---->| 0
+    //
+    // Intersection connections: 0->1, 0->2, 0->3, 10->1, 10->2, 11->1, 11->2
+    //
+
+    // Expected NBG:
+    //                   20              16
+    //             21 o<-o<------------o<-o 15
+    //                |  o8------13>o     ↑
+    //                |  o 7        o 14  |
+    //                ↓  ↑          |     |
+    //             23 o->o 3        ↓     |
+    //  6            /  / \         o 18  |
+    //  o<-o<5-----2o←-/---o<22-----o 19  |
+    //  |            \ | /→o4--------9>o->o 10
+    //  ↓              o 1
+    //  o 11           ↑
+    //  o---------->o->o 0
+    //  12         17
+    //
+    // Intersection connections: 1->2, 1->3, 1->4, 22->2, 22->3, 23->2, 23->3
+
+    NodeBasedDynamicGraph g;
+
+    auto w = weight(2);
+    auto v0 = g.InsertNode();
+    auto v1 = g.InsertNode();
+    auto v2 = g.InsertNode();
+    auto v3 = g.InsertNode();
+    auto v4 = g.InsertNode();
+    auto v5 = g.InsertNode();
+    auto v6 = g.InsertNode();
+    auto v7 = g.InsertNode();
+    auto v8 = g.InsertNode();
+    auto v9 = g.InsertNode();
+    auto v10 = g.InsertNode();
+    auto v11 = g.InsertNode();
+    g.InsertEdge(v0, v1, weight(999)); // costly maneuver
+    g.InsertEdge(v0, v2, weight(10));  // slightly costly
+    g.InsertEdge(v0, v3, w);
+    g.InsertEdge(v1, v4, w);
+    g.InsertEdge(v2, v5, w);
+    g.InsertEdge(v3, v6, w);
+    g.InsertEdge(v4, v7, w);
+    g.InsertEdge(v5, v8, w);
+    g.InsertEdge(v6, v9, w);
+    g.InsertEdge(v7, v0, w);
+    g.InsertEdge(v8, v10, w);
+    g.InsertEdge(v9, v11, w);
+    g.InsertEdge(v10, v1, w);
+    g.InsertEdge(v10, v2, w);
+    g.InsertEdge(v11, v1, w);
+    g.InsertEdge(v11, v2, weight(100)); // costly uturn
+
+    BaseGraph baseGraph{g};
+    BOOST_REQUIRE(rad::isStronglyConnectedGraph(baseGraph));
+    auto rig = rad::buildRiGraph(baseGraph, v0);
+    BOOST_REQUIRE(rad::isStronglyConnectedGraph(rig));
+
+    const auto path = rad::routeInspectionImpl(rig, 0);
+    const auto route = ra::prepareFinalRoute(rig, path);
+
+    // TODO fix/adapt test by solving RPP
+    BOOST_REQUIRE(route.size() == 17);
+    BOOST_TEST(path[0] == 0);
+    BOOST_TEST(path[1] == 2);
+    BOOST_TEST(path[2] == 5);
+    BOOST_TEST(path[3] == 8);
+    BOOST_TEST(path[4] == 10);
+    BOOST_TEST(path[5] == 1);
+    BOOST_TEST(path[6] == 4);
+    BOOST_TEST(path[7] == 7);
+    BOOST_TEST(path[8] == 8);
+    BOOST_TEST(path[9] == 3);
+    BOOST_TEST(path[10] == 6);
+    BOOST_TEST(path[11] == 9);
+    BOOST_TEST(path[12] == 11);
+    BOOST_TEST(path[13] == 1);
+    BOOST_TEST(path[14] == 4);
+    BOOST_TEST(path[15] == 7);
+    BOOST_TEST(path[16] == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
