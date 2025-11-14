@@ -19,6 +19,9 @@
 #include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
 #include <boost/range/adaptors.hpp>
 
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
@@ -265,18 +268,35 @@ PathMatrix<Vertex>
 manyToMany(const Graph &g, const std::vector<Vertex> &sources, const std::vector<Vertex> &targets)
 {
     PathMatrix<Vertex> m;
-    m.rows.reserve(sources.size());
-    for (auto s : sources)
+    // allocate matrix
+    m.rows.resize(sources.size());
+    for (auto [idx, s] : boost::adaptors::index(sources))
     {
-        auto paths = oneToMany(g, s, targets);
-        BOOST_ASSERT(targets.size() == paths.size());
-        auto &row = m.rows.emplace_back();
+        auto &row = m.rows[idx];
         row.source = s;
-        for (auto i : util::irange(0UL, targets.size()))
-        {
-            row.columns.emplace_back(targets[i], std::move(paths[i]));
-        }
+        row.columns.resize(targets.size());
     }
+
+    // parallelize multiple oneToMany calls
+    tbb::parallel_for(tbb::blocked_range<size_t>(0UL, sources.size()),
+                      [&](const tbb::blocked_range<size_t> &r)
+                      {
+                          for (auto sIdx = r.begin(); sIdx != r.end(); ++sIdx)
+                          {
+                              // calc 1-to-m routes
+                              auto paths = oneToMany(g, sources[sIdx], targets);
+                              BOOST_ASSERT(targets.size() == paths.size());
+                              // populate matrix
+                              auto &row = m.rows[sIdx];
+                              for (auto [tIdx, t] : boost::adaptors::index(targets))
+                              {
+                                  auto &col = row.columns[tIdx];
+                                  col.target = t;
+                                  col.path = std::move(paths[tIdx]);
+                              }
+                          }
+                      });
+
     return m;
 }
 
