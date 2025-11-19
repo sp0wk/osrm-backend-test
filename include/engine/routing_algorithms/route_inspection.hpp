@@ -5,7 +5,6 @@
 #include "util/coordinate.hpp"
 #include "util/exception.hpp"
 #include "util/log.hpp"
-#include "util/node_based_graph.hpp"
 #include "util/typedefs.hpp"
 
 #include <boost/geometry.hpp>
@@ -40,13 +39,20 @@ namespace detail
 // Common types
 //-------------------------------------------------------------------------------------------------
 
-// Main graph type (BGL based) used for route inspection implementation
-template <typename BaseNode>
-using RiGraph = boost::adjacency_list<boost::vecS,
-                                      boost::vecS,
-                                      boost::directedS,
-                                      boost::property<boost::vertex_name_t, BaseNode>,
-                                      boost::property<boost::edge_weight_t, EdgeWeight>>;
+// Main graph types (BGL based) used for route inspection implementation
+template <typename BNode, typename BEdge>
+using RiGraphBase = boost::adjacency_list<
+    boost::vecS,
+    boost::vecS,
+    boost::directedS,
+    boost::property<boost::vertex_name_t, BNode>,
+    boost::property<boost::edge_name_t, BEdge, boost::property<boost::edge_weight_t, EdgeWeight>>>;
+
+template <typename BNode, typename BEdge> struct RiGraph : public RiGraphBase<BNode, BEdge>
+{
+    using BaseNode = BNode;
+    using BaseEdge = BEdge;
+};
 
 // Represents a sequence of nodes (vertices)
 template <typename Vertex> using Path = std::vector<Vertex>;
@@ -511,7 +517,10 @@ bool augmentImbalancedGraph(Graph &g, NodeDegreeDeltaArray &deltas)
                 auto [baseEdge, found] = edge(u, v, g);
                 BOOST_ASSERT(found);
                 // duplicate edge
-                add_edge(u, v, get(boost::edge_weight, g, baseEdge), g);
+                auto [dupEdge, isNew] = add_edge(u, v, g);
+                BOOST_ASSERT(isNew);
+                put(boost::edge_name, g, dupEdge, get(boost::edge_name, g, baseEdge));
+                put(boost::edge_weight, g, dupEdge, get(boost::edge_weight, g, baseEdge));
                 // adjust degree deltas
                 ++deltas[u];
                 --deltas[v];
@@ -535,30 +544,25 @@ struct NoFilter
 // - Starts at the "start" node of the base graph
 // - Building a subgraph happens by BFS-traversing base graph
 // - EdgeFilter is applied to base graph's edges to filter them out from resulting subgraph
-// - Replaces EBG nodes/edges with corresponding NBG nodes/edges
+// - EBG nodes/edges are mapped directly to corresponding NBG nodes/edges
 //   Example:
 //      EBG:           ->           NBG:
-//                                         o g
-//                                         |
-//              ↑                          o d
-//              | 3              f      c /|\ e      h
-//      2 <----- ----> 4    ->   o-------o-|-o-------o
-//              ↑ 1                       \|/
-//              |                          o b
-//                                         |
-//                                         o a
 //
-// Node mappings:   1 -> ab; 2 -> cf; 3 -> dg; 4 -> eh
-// Edge mappings:   1,2 -> bc; 1,3 -> bd; 1,4 -> be
+//              ↑                      o 3
+//              | 3                    ↑
+//      2 <----- ----> 4    ->    2 o  |  o 4
+//              ↑ 1                  \ | /
+//              |                     \|/
+//                                     o 1
 template <typename BaseGraph,
-          typename BaseNode = boost::graph_traits<BaseGraph>,
+          typename BaseNode = boost::graph_traits<BaseGraph>::vertex_descriptor,
+          typename BaseEdge = boost::graph_traits<BaseGraph>::edge_descriptor,
           typename EdgeFilter = NoFilter>
-RiGraph<BaseNode>
-buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFilter = {})
+auto buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFilter = {})
 {
     using namespace boost;
 
-    using RIG = RiGraph<BaseNode>;
+    using RIG = RiGraph<BaseNode, BaseEdge>;
     using Vertex = graph_traits<RIG>::vertex_descriptor;
     using FilteredGraph = filtered_graph<BaseGraph, EdgeFilter>;
 
@@ -571,46 +575,46 @@ buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFil
 
         RiGraphBuilderVis(RIG &o, const BaseNode start) : default_bfs_visitor(), out{o}
         {
-            // one EBG node -> two NBG nodes
-            // add start as a first NBG node
+            // add first vertex
             curVertex = add_vertex(start, out);
-            vmap[start].first = curVertex;
+            vmap[start] = curVertex;
         }
 
         // before iterating edges
         void examine_vertex(const V u, const FilteredGraph &)
         {
             BOOST_ASSERT(vmap.contains(u));
-            auto &m = vmap[u];
-            // add second NBG node and connect it with the first
-            m.second = add_vertex(u, out);
-            // NOTE: EBG node itself will have 0 weight in NBG as only transition edges from this
-            // NBG node will contain EBG node's weight
-            add_edge(m.first, m.second, EdgeWeight{0}, out);
-            curVertex = m.second;
+            curVertex = vmap[u];
         }
 
         // new vertex and edge
         void tree_edge(const E e, const FilteredGraph &fg)
         {
-            // add first NBG node
             auto tv = target(e, fg);
             Vertex newVertex = add_vertex(tv, out);
-            vmap[tv].first = newVertex;
-            // NBG's transition edge will contain EBG's node weight + turn penalty
-            add_edge(curVertex, newVertex, get(edge_weight, fg, e), out);
+            vmap[tv] = newVertex;
+            addEdge(curVertex, newVertex, e, get(edge_weight, fg, e));
         }
 
         // new edge only
         void non_tree_edge(const E e, const FilteredGraph &fg)
         {
-            // connect cur node to a previously added first NBG node
-            // NBG's transition edge will contain EBG's node weight + turn penalty
-            add_edge(curVertex, vmap[target(e, fg)].first, get(edge_weight, fg, e), out);
+            // connect cur node to a previously added NBG node
+            auto targetVertex = vmap[target(e, fg)];
+            addEdge(curVertex, targetVertex, e, get(edge_weight, fg, e));
+        }
+
+        // helper
+        void addEdge(const Vertex u, const Vertex v, const E edgeName, const EdgeWeight weight)
+        {
+            auto [e, isNew] = add_edge(u, v, out);
+            BOOST_ASSERT(isNew);
+            put(edge_name, out, e, edgeName);
+            put(edge_weight, out, e, weight);
         }
 
         RIG &out;
-        std::unordered_map<V, std::pair<Vertex, Vertex>> vmap; // EBG-to-NBG vertex mappings
+        std::unordered_map<V, Vertex> vmap; // old-new vertex mappings
         Vertex curVertex;
     };
 
@@ -619,6 +623,148 @@ buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFil
     breadth_first_search(fg, start, visitor(RiGraphBuilderVis{out, start}));
 
     return out;
+}
+
+// Greedily DFS traverse RI graph to create a circuit (possibly disconnected)
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+auto getDfsCircuitGreedy(Graph &g, const Vertex start)
+{
+    using EdgeIt = decltype(out_edges(start, g).first);
+
+    // prepare initial state
+    const auto nbOfVertices = num_vertices(g);
+    std::vector<EdgeIt> unusedEdges(nbOfVertices);
+    std::unordered_set<Vertex> visitedNodes;
+    auto [vb, ve] = vertices(g);
+    for (; vb != ve; ++vb)
+    {
+        unusedEdges[*vb] = out_edges(*vb, g).first;
+    }
+    std::stack<Vertex> st;
+
+    Path<Vertex> circuit;
+    circuit.reserve(nbOfVertices);
+
+    // add start vertex
+    circuit.emplace_back(start);
+
+    // find circuit
+    st.push(start);
+    while (!st.empty())
+    {
+        auto v = st.top();
+        visitedNodes.emplace(v);
+        auto eEnd = out_edges(v, g).second;
+        std::optional<EdgeIt> nextEdge;
+        if (auto e = unusedEdges[v]; e != eEnd)
+        {
+            for (; e != eEnd; ++e)
+            {
+                // check that target vertex is unvisited
+                if (!visitedNodes.contains(target(*e, g)))
+                {
+                    nextEdge.emplace(e);
+                    break;
+                }
+            }
+        }
+
+        if (nextEdge)
+        {
+            // take next edge v->u
+            auto e = *nextEdge;
+            auto u = target(*e, g);
+            unusedEdges[v] = ++e;
+            st.push(u);
+        }
+        else
+        {
+            circuit.emplace_back(v);
+            st.pop();
+        }
+    }
+
+    std::reverse(circuit.begin(), circuit.end());
+    return circuit;
+}
+
+// Optimize RiGraph connectivity to minimize the number of transition edges
+template <typename Graph> void optimizeRiGraph(Graph &g)
+{
+    using namespace boost;
+
+    using Vertex = boost::graph_traits<Graph>::vertex_descriptor;
+    using Edge = boost::graph_traits<Graph>::edge_descriptor;
+
+    // TODO rework/optimize this POC part
+    {
+        std::vector<std::vector<Vertex>> allPreds;
+        std::vector<std::vector<EdgeWeight>> allDists;
+        const auto nbOfVertices = num_vertices(g);
+        allPreds.resize(nbOfVertices);
+        allDists.resize(nbOfVertices);
+
+        // calc all shortest paths between vertices
+        // TODO optimize and reuse shortest paths results
+        for (auto [sIdx, s] : adaptors::index(make_iterator_range(vertices(g))))
+        {
+            // prepare maps for predecessors and distances
+            auto &preds = allPreds[sIdx];
+            auto &dists = allDists[sIdx];
+            preds.resize(nbOfVertices);
+            dists.resize(nbOfVertices, INVALID_EDGE_WEIGHT);
+
+            // calculate shortest paths from source to all vertices
+            shortestPaths(g, s, preds, dists);
+
+            for (auto e : make_iterator_range(out_edges(s, g)))
+            {
+                if (preds[target(e, g)] != s)
+                {
+                    // edge is not shortest path - remove it
+                    remove_edge(e, g);
+                }
+            }
+        }
+
+        // get DFS circuit and connect the gaps with shortest paths
+        // TODO replace with a proper heuristic
+        std::vector<Edge> usedEdges;
+        const auto c = getDfsCircuitGreedy(g, Vertex{0});
+        for (auto it = std::next(c.cbegin()); it != c.cend(); ++it)
+        {
+            auto u = *std::prev(it);
+            auto v = *it;
+            auto [e, exists] = edge(u, v, g);
+            if (exists)
+            {
+                usedEdges.emplace_back(e);
+            }
+            else
+            {
+                BOOST_ASSERT(allDists[u][v] != INVALID_EDGE_WEIGHT);
+                auto sp = extractPath(allPreds[u], u, v);
+                BOOST_ASSERT(!sp.empty());
+                for (auto it = std::next(sp.cbegin()); it != sp.cend(); ++it)
+                {
+                    auto u = *std::prev(it);
+                    auto v = *it;
+                    auto [e, exists] = edge(u, v, g);
+                    BOOST_ASSERT(exists);
+                    usedEdges.emplace_back(e);
+                }
+            }
+        }
+
+        for (auto e : make_iterator_range(edges(g)))
+        {
+            if (std::find(usedEdges.cbegin(), usedEdges.cend(), e) == usedEdges.cend())
+            {
+                // edge was not visited and considered useless -> remove
+                remove_edge(e, g);
+            }
+        }
+    }
 }
 
 // Route inspection (directed Chinese Postman Problem) solver
@@ -639,15 +785,17 @@ Path<Vertex> routeInspectionImpl(Graph &g, const Vertex s)
             return circuit;
         }
     }
-
-    // Eulerian circuit not found -> augment graph and retry
-    if (augmentImbalancedGraph(g, deltas) && isEulerianGraph(deltas))
+    else
     {
-        // graph is now Eulerian -> find circuit
-        if (auto circuit = findEulerianCircuit(g, s); !circuit.empty())
+        // non-Eulerian graph -> augment graph and retry
+        if (augmentImbalancedGraph(g, deltas) && isEulerianGraph(deltas))
         {
-            // Eulerian circuit found -> done
-            return circuit;
+            // graph is now Eulerian -> find circuit
+            if (auto circuit = findEulerianCircuit(g, s); !circuit.empty())
+            {
+                // Eulerian circuit found -> done
+                return circuit;
+            }
         }
     }
 
@@ -776,7 +924,8 @@ std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
 
     using BaseGraph = BglGraphAdaptor<EdgeBasedGraph>;
     using BaseNode = boost::graph_traits<BaseGraph>::vertex_descriptor;
-    using RIG = RiGraph<BaseNode>;
+    using BaseEdge = boost::graph_traits<BaseGraph>::edge_descriptor;
+    using RIG = RiGraph<BaseNode, BaseEdge>;
     using Vertex = boost::graph_traits<RIG>::vertex_descriptor;
 
     static constexpr double MAX_POLYGON_AREA = 0;
@@ -815,6 +964,8 @@ std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
         // no polygon provided
         rig = buildRiGraph(baseGraph, s);
     }
+
+    optimizeRiGraph(rig);
 
     // verify resulting graph is strongly connected
     if (!isStronglyConnectedGraph(rig))
