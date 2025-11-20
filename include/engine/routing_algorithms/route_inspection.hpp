@@ -629,16 +629,32 @@ auto buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &ed
 template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
 auto getDfsCircuitGreedy(Graph &g, const Vertex start)
 {
-    using EdgeIt = decltype(out_edges(start, g).first);
+    using namespace boost;
+
+    using Edge = decltype(*out_edges(start, g).first);
+    using SortedEdges = std::vector<Edge>;
+    using EdgeIt = SortedEdges::const_iterator;
+    using EdgeState = std::pair<EdgeIt, SortedEdges>;
 
     // prepare initial state
     const auto nbOfVertices = num_vertices(g);
-    std::vector<EdgeIt> unusedEdges(nbOfVertices);
+    std::vector<EdgeState> unusedEdges(nbOfVertices);
     std::unordered_set<Vertex> visitedNodes;
-    auto [vb, ve] = vertices(g);
-    for (; vb != ve; ++vb)
+    for (auto v : make_iterator_range(vertices(g)))
     {
-        unusedEdges[*vb] = out_edges(*vb, g).first;
+        auto &vEdges = unusedEdges[v].second;
+        vEdges.reserve(out_degree(v, g));
+        for (auto e : make_iterator_range(out_edges(v, g)))
+        {
+            vEdges.emplace_back(e);
+        }
+        // sort edges by their weight
+        std::stable_sort(vEdges.begin(),
+                         vEdges.end(),
+                         [&g](auto a, auto b)
+                         { return get(edge_weight, g, a) < get(edge_weight, g, b); });
+        // set initial iterator
+        unusedEdges[v].first = vEdges.cbegin();
     }
     std::stack<Vertex> st;
 
@@ -654,9 +670,10 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
     {
         auto v = st.top();
         visitedNodes.emplace(v);
-        auto eEnd = out_edges(v, g).second;
+        const auto &vEdges = unusedEdges[v].second;
+        auto eEnd = vEdges.cend();
         std::optional<EdgeIt> nextEdge;
-        if (auto e = unusedEdges[v]; e != eEnd)
+        if (auto e = unusedEdges[v].first; e != eEnd)
         {
             for (; e != eEnd; ++e)
             {
@@ -667,6 +684,18 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
                     break;
                 }
             }
+
+            // continue expansion at dead-ends
+            if (!nextEdge && out_degree(v, g) == 1)
+            {
+                BOOST_ASSERT(e == eEnd);
+                e = vEdges.cbegin();
+                // if not back to start
+                if (target(*e, g) != start)
+                {
+                    nextEdge.emplace(e);
+                }
+            }
         }
 
         if (nextEdge)
@@ -674,7 +703,7 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
             // take next edge v->u
             auto e = *nextEdge;
             auto u = target(*e, g);
-            unusedEdges[v] = ++e;
+            unusedEdges[v].first = ++e;
             st.push(u);
         }
         else

@@ -609,7 +609,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_complex_intersection)
     g.InsertEdge(v7, v0, w);
     g.InsertEdge(v8, v10, w);
     g.InsertEdge(v9, v11, w);
-    g.InsertEdge(v10, v1, w);
+    g.InsertEdge(v10, v1, weight(5));
     g.InsertEdge(v10, v2, w);
     g.InsertEdge(v11, v1, w);
     g.InsertEdge(v11, v2, weight(100)); // costly uturn
@@ -733,7 +733,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     auto rig = makeRiGraph(g, v0);
     const auto path = runRouteInspection(rig, 0);
 
-    // TODO fix test with better edge pruning heuristic
     BOOST_REQUIRE(path.size() == 11);
     BOOST_TEST(path[0] == 0);
     BOOST_TEST(path[1] == 1);
