@@ -747,6 +747,103 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     BOOST_TEST(path[10] == 0);
 }
 
+BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_many_disjoints)
+{
+    // Input EBG:
+    //
+    //       9 o<------------|
+    //        /|             |
+    //   4  2↓ ↓3            |
+    //   o<--o o----->o 5    |
+    //   |    \↑      |\_    |
+    //   ↓     |      |  \_→ o 7
+    // 6 o---->o 1    |      |
+    //   |     ↑      |  ___/
+    //   |     |      ↓ /
+    //   |---->o<-----o 8
+    //         0
+
+    NodeBasedDynamicGraph g;
+
+    auto w = weight(2);
+    auto v0 = g.InsertNode();
+    auto v1 = g.InsertNode();
+    auto v2 = g.InsertNode();
+    auto v3 = g.InsertNode();
+    auto v4 = g.InsertNode();
+    auto v5 = g.InsertNode();
+    auto v6 = g.InsertNode();
+    auto v7 = g.InsertNode();
+    auto v8 = g.InsertNode();
+    auto v9 = g.InsertNode();
+    g.InsertEdge(v0, v1, w);
+    g.InsertEdge(v1, v2, weight(5));
+    g.InsertEdge(v1, v3, weight(10));
+    g.InsertEdge(v2, v4, w);
+    g.InsertEdge(v3, v5, w);
+    g.InsertEdge(v4, v6, w);
+    g.InsertEdge(v5, v7, weight(10));
+    auto e58 = g.InsertEdge(v5, v8, weight(20));
+    g.InsertEdge(v6, v0, weight(100));
+    g.InsertEdge(v6, v1, w);
+    g.InsertEdge(v7, v8, weight(12));
+    g.InsertEdge(v7, v9, weight(30));
+    g.InsertEdge(v8, v0, w);
+    g.InsertEdge(v9, v2, weight(10));
+    g.InsertEdge(v9, v3, weight(8));
+
+    BaseGraph baseGraph{g};
+    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
+
+    BOOST_TEST_CONTEXT("Use 5->8 edge")
+    {
+        auto rig = makeRiGraph(g, v0);
+        const auto path = runRouteInspection(rig, 0);
+
+        BOOST_REQUIRE(path.size() == 14);
+        BOOST_TEST(path[0] == 0);
+        BOOST_TEST(path[1] == 1);
+        BOOST_TEST(path[2] == 2);
+        BOOST_TEST(path[3] == 4);
+        BOOST_TEST(path[4] == 6);
+        BOOST_TEST(path[5] == 1);
+        BOOST_TEST(path[6] == 3);
+        BOOST_TEST(path[7] == 5);
+        BOOST_TEST(path[8] == 7);
+        BOOST_TEST(path[9] == 9);
+        BOOST_TEST(path[10] == 3);
+        BOOST_TEST(path[11] == 5);
+        BOOST_TEST(path[12] == 8);
+        BOOST_TEST(path[13] == 0);
+    }
+
+    BOOST_TEST_CONTEXT("Avoid 5->8 edge")
+    {
+        auto g2 = g;
+        g2.GetEdgeData(e58).weight = EdgeWeight{100};
+
+        auto rig = makeRiGraph(g2, v0);
+        const auto path = runRouteInspection(rig, 0);
+
+        BOOST_REQUIRE(path.size() == 15);
+        BOOST_TEST(path[0] == 0);
+        BOOST_TEST(path[1] == 1);
+        BOOST_TEST(path[2] == 2);
+        BOOST_TEST(path[3] == 4);
+        BOOST_TEST(path[4] == 6);
+        BOOST_TEST(path[5] == 1);
+        BOOST_TEST(path[6] == 3);
+        BOOST_TEST(path[7] == 5);
+        BOOST_TEST(path[8] == 7);
+        BOOST_TEST(path[9] == 9);
+        BOOST_TEST(path[10] == 3);
+        BOOST_TEST(path[11] == 5);
+        BOOST_TEST(path[12] == 7);
+        BOOST_TEST(path[13] == 8);
+        BOOST_TEST(path[14] == 0);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_optimal_cost)
 {
     // Input EBG:
@@ -803,6 +900,8 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_optimal_cost)
     const auto path = runRouteInspection(rig, 0);
 
     // TODO fix test with better edge pruning heuristic
+    // Current cost: 10 + 2 + 30 + 2 + 30 + 2 + 40 + 2 + 2 + 2 = 122
+    // Minimum cost: 20 + 2 + 25 + 2 + 45 + 2 + 10 + 2 + 2 + 2 = 112
     BOOST_REQUIRE(path.size() == 11);
     BOOST_TEST(path[0] == 0);
     BOOST_TEST(path[1] == 2);

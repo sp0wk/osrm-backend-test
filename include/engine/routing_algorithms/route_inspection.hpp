@@ -14,6 +14,7 @@
 #include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/dijkstra_shortest_paths.hpp>
 #include <boost/graph/filtered_graph.hpp>
+#include <boost/graph/reverse_graph.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
 #include <boost/range/adaptors.hpp>
@@ -44,7 +45,7 @@ template <typename BNode, typename BEdge>
 using RiGraphBase = boost::adjacency_list<
     boost::vecS,
     boost::vecS,
-    boost::directedS,
+    boost::bidirectionalS,
     boost::property<boost::vertex_name_t, BNode>,
     boost::property<boost::edge_name_t, BEdge, boost::property<boost::edge_weight_t, EdgeWeight>>>;
 
@@ -52,6 +53,21 @@ template <typename BNode, typename BEdge> struct RiGraph : public RiGraphBase<BN
 {
     using BaseNode = BNode;
     using BaseEdge = BEdge;
+};
+
+// Graph edge hasher
+template <typename Graph, typename Edge = boost::graph_traits<Graph>::edge_descriptor>
+struct EdgeHash
+{
+    std::size_t operator()(const Edge &e) const noexcept
+    {
+        std::size_t seed = 0;
+        boost::hash_combine(seed, source(e, g));
+        boost::hash_combine(seed, target(e, g));
+        return seed;
+    }
+
+    const Graph &g;
 };
 
 // Represents a sequence of nodes (vertices)
@@ -205,7 +221,6 @@ void shortestPaths(const Graph &g,
                    std::vector<Vertex> &preds,
                    std::vector<EdgeWeight> &dists)
 {
-    BOOST_ASSERT(s < num_vertices(g));
     boost::dijkstra_shortest_paths(g,
                                    s,
                                    boost::predecessor_map(preds.data())
@@ -234,6 +249,50 @@ Path<Vertex> extractPath(const std::vector<Vertex> &preds, const Vertex s, const
     result.emplace_back(curNode);
     std::reverse(result.begin(), result.end());
     return result;
+}
+
+// Finds shortest paths from source s to target t
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+ShortestPath<Vertex> shortestPath(const Graph &g, const Vertex s, const Vertex t)
+{
+    using namespace boost;
+
+    struct Terminator : default_dijkstra_visitor
+    {
+        Terminator(const Vertex t) : default_dijkstra_visitor(), target{t} {}
+
+        void examine_vertex(const Vertex v, const Graph &) const
+        {
+            if (v == target)
+            {
+                throw v;
+            }
+        }
+
+        Vertex target;
+    };
+
+    // prepare maps for predecessors and distances
+    std::vector<Vertex> preds(num_vertices(g));
+    std::vector<EdgeWeight> dists(num_vertices(g), INVALID_EDGE_WEIGHT);
+
+    try
+    {
+        dijkstra_shortest_paths(g,
+                                s,
+                                predecessor_map(preds.data())
+                                    .distance_map(dists.data())
+                                    .distance_inf(INVALID_EDGE_WEIGHT)
+                                    .visitor(Terminator{t}));
+    }
+    catch (const Vertex &)
+    {
+        // path to target is found
+        return {extractPath(preds, s, t), dists[t]};
+    }
+
+    // no path found
+    return {};
 }
 
 // Finds shortest paths from a source vertex to all target vertices
@@ -625,13 +684,13 @@ auto buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &ed
     return out;
 }
 
-// Greedily DFS traverse RI graph to create a circuit (possibly disconnected)
+// Greedily DFS traverse RI graph to create a circuit with possible disjoints
 template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-auto getDfsCircuitGreedy(Graph &g, const Vertex start)
+auto getDfsCircuitGreedy(const Graph &g, const Vertex start)
 {
     using namespace boost;
 
-    using Edge = decltype(*out_edges(start, g).first);
+    using Edge = boost::graph_traits<Graph>::edge_descriptor;
     using SortedEdges = std::vector<Edge>;
     using EdgeIt = SortedEdges::const_iterator;
     using EdgeState = std::pair<EdgeIt, SortedEdges>;
@@ -640,6 +699,10 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
     const auto nbOfVertices = num_vertices(g);
     std::vector<EdgeState> unusedEdges(nbOfVertices);
     std::unordered_set<Vertex> visitedNodes;
+    std::stack<Vertex> st;
+    bool uniqueParent = false;
+
+    // populate/sort edges for cheapest-first visit order
     for (auto v : make_iterator_range(vertices(g)))
     {
         auto &vEdges = unusedEdges[v].second;
@@ -656,20 +719,23 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
         // set initial iterator
         unusedEdges[v].first = vEdges.cbegin();
     }
-    std::stack<Vertex> st;
 
+    // prepare result
     Path<Vertex> circuit;
+    std::unordered_set<Vertex> disjointInNodes;
+    std::unordered_set<Vertex> disjointOutNodes;
     circuit.reserve(nbOfVertices);
+    disjointInNodes.reserve(nbOfVertices / 2);
+    disjointOutNodes.reserve(nbOfVertices / 2);
 
     // add start vertex
-    circuit.emplace_back(start);
+    visitedNodes.emplace(start);
 
     // find circuit
     st.push(start);
     while (!st.empty())
     {
         auto v = st.top();
-        visitedNodes.emplace(v);
         const auto &vEdges = unusedEdges[v].second;
         auto eEnd = vEdges.cend();
         std::optional<EdgeIt> nextEdge;
@@ -685,21 +751,31 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
                 }
             }
 
-            // continue expansion at dead-ends
-            if (!nextEdge && out_degree(v, g) == 1)
+            // all unvisited edges point to already visited nodes
+            if (!nextEdge && !visitedNodes.contains(v))
             {
-                BOOST_ASSERT(e == eEnd);
-                e = vEdges.cbegin();
-                // if not back to start
-                if (target(*e, g) != start)
+                if (out_degree(v, g) == 1)
                 {
-                    nextEdge.emplace(e);
+                    // add unique successor to circuit
+                    auto u = target(*vEdges.cbegin(), g);
+                    circuit.emplace_back(u);
+                }
+                else
+                {
+                    // out-disjoint node to be connected later
+                    disjointOutNodes.emplace(v);
                 }
             }
         }
 
         if (nextEdge)
         {
+            if (uniqueParent)
+            {
+                // ensure edge to this unique parent exists
+                circuit.emplace_back(v);
+                uniqueParent = false;
+            }
             // take next edge v->u
             auto e = *nextEdge;
             auto u = target(*e, g);
@@ -708,13 +784,129 @@ auto getDfsCircuitGreedy(Graph &g, const Vertex start)
         }
         else
         {
+            uniqueParent = in_degree(v, g) == 1;
+            if (!uniqueParent)
+            {
+                // in-disjoint node to be connected later
+                disjointInNodes.emplace(v);
+            }
             circuit.emplace_back(v);
             st.pop();
         }
+
+        // mark node as visited
+        visitedNodes.emplace(v);
     }
 
     std::reverse(circuit.begin(), circuit.end());
-    return circuit;
+
+    return std::make_tuple(
+        std::move(circuit), std::move(disjointInNodes), std::move(disjointOutNodes));
+}
+
+// Greedily examine graph and collect optimal set of edges for route inspection
+template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+auto collectMinCostEdgeSet(const Graph &g, const Vertex start)
+{
+    using namespace boost;
+
+    using Edge = boost::graph_traits<Graph>::edge_descriptor;
+    using ResultSet = std::unordered_set<Edge, EdgeHash<Graph>>;
+
+    ResultSet usedEdges{0, EdgeHash{g}};
+    usedEdges.reserve(num_edges(g));
+
+    // 1) Get DFS circuit with disjoints
+    auto [circuit, disjointInNodes, disjointOutNodes] = getDfsCircuitGreedy(g, start);
+    BOOST_ASSERT(circuit.size() > 1);
+
+    // 2) Process regular edges from the circuit
+    for (auto it = std::next(circuit.cbegin()); it != circuit.cend(); ++it)
+    {
+        auto u = *std::prev(it);
+        auto v = *it;
+        auto [e, exists] = edge(u, v, g);
+        if (exists)
+        {
+            usedEdges.emplace(e);
+            // fix in-disjoint with this edge (if any)
+            disjointInNodes.erase(v);
+        }
+    }
+
+    if (disjointInNodes.empty() && disjointOutNodes.empty())
+    {
+        // no disjoints
+        return usedEdges;
+    }
+
+    // 3) Find shortest paths from/to start
+    std::vector<Vertex> preds(num_vertices(g));
+    std::vector<EdgeWeight> dists(num_vertices(g), INVALID_EDGE_WEIGHT);
+    std::vector<Vertex> revPreds(num_vertices(g));
+    std::vector<EdgeWeight> revDists(num_vertices(g), INVALID_EDGE_WEIGHT);
+    // for in-disjoints (start -> v)
+    shortestPaths(g, start, preds, dists);
+    // for out-disjoints (v -> start)
+    auto revg = make_reverse_graph(g);
+    shortestPaths(revg, start, revPreds, revDists);
+
+    // 4) Fix out-disjoints by connecting them to start using best edge
+    for (auto u : disjointOutNodes)
+    {
+        BOOST_ASSERT(out_degree(u, g) > 1);
+        BOOST_ASSERT(revDists[u] != INVALID_EDGE_WEIGHT);
+        Vertex v = revPreds[u]; // pred indicates best edge
+        auto [e, exists] = edge(u, v, g);
+        BOOST_ASSERT(exists);
+        usedEdges.emplace(e);
+        // fix in-disjoint with this edge (if any)
+        disjointInNodes.erase(v);
+    }
+
+    // 5) Fix leftover in-disjoints by connecting start to them using best edge
+    for (auto v : disjointInNodes)
+    {
+        BOOST_ASSERT(in_degree(v, g) > 1);
+        BOOST_ASSERT(dists[v] != INVALID_EDGE_WEIGHT);
+        Vertex u = preds[v]; // pred indicates best edge
+        auto [e, exists] = edge(u, v, g);
+        BOOST_ASSERT(exists);
+        usedEdges.emplace(e);
+    }
+
+    return usedEdges;
+}
+
+// Removes edges from a graph which can be replaced with a cheaper shortest path
+template <typename Graph> auto collectCostlyEdges(Graph &g)
+{
+    using Edge = boost::graph_traits<Graph>::edge_descriptor;
+
+    auto const isShortestPath = [&g](const Edge e)
+    {
+        auto u = source(e, g);
+        auto v = target(e, g);
+        const auto sp = shortestPath(g, u, v);
+        const auto &p = sp.path;
+        BOOST_ASSERT(!p.empty());
+        // checks that shortest path is edge itself
+        return p.size() == 2 && p[0] == u && p[1] == v;
+    };
+
+    std::vector<Edge> costlyEdges;
+    costlyEdges.reserve(num_edges(g) / 2);
+
+    for (const auto e : make_iterator_range(edges(g)))
+    {
+        if (!isShortestPath(e))
+        {
+            // edge is not the shortest path between u->v
+            costlyEdges.emplace_back(e);
+        }
+    }
+
+    return costlyEdges;
 }
 
 // Optimize RiGraph connectivity to minimize the number of transition edges
@@ -725,74 +917,33 @@ template <typename Graph> void optimizeRiGraph(Graph &g)
     using Vertex = boost::graph_traits<Graph>::vertex_descriptor;
     using Edge = boost::graph_traits<Graph>::edge_descriptor;
 
-    // TODO rework/optimize this POC part
+    // 1) Preprocessing to prune edges which are not shortest paths
+    const auto costlyEdges = collectCostlyEdges(g);
+    for (const auto e : costlyEdges)
     {
-        std::vector<std::vector<Vertex>> allPreds;
-        std::vector<std::vector<EdgeWeight>> allDists;
-        const auto nbOfVertices = num_vertices(g);
-        allPreds.resize(nbOfVertices);
-        allDists.resize(nbOfVertices);
+        remove_edge(e, g);
+    }
 
-        // calc all shortest paths between vertices
-        // TODO optimize and reuse shortest paths results
-        for (auto [sIdx, s] : adaptors::index(make_iterator_range(vertices(g))))
+    // 2) Collect optimal edges
+    Vertex start{0};
+    auto usedEdges = collectMinCostEdgeSet(g, start);
+
+    // 3) Collect unused edges
+    std::vector<Edge> unusedEdges;
+    unusedEdges.reserve(num_edges(g) - usedEdges.size());
+    for (const auto e : make_iterator_range(edges(g)))
+    {
+        if (!usedEdges.contains(e))
         {
-            // prepare maps for predecessors and distances
-            auto &preds = allPreds[sIdx];
-            auto &dists = allDists[sIdx];
-            preds.resize(nbOfVertices);
-            dists.resize(nbOfVertices, INVALID_EDGE_WEIGHT);
-
-            // calculate shortest paths from source to all vertices
-            shortestPaths(g, s, preds, dists);
-
-            for (auto e : make_iterator_range(out_edges(s, g)))
-            {
-                if (preds[target(e, g)] != s)
-                {
-                    // edge is not shortest path - remove it
-                    remove_edge(e, g);
-                }
-            }
+            // edge is estimated as not optimal -> remove
+            unusedEdges.emplace_back(e);
         }
+    }
 
-        // get DFS circuit and connect the gaps with shortest paths
-        // TODO replace with a proper heuristic
-        std::vector<Edge> usedEdges;
-        const auto c = getDfsCircuitGreedy(g, Vertex{0});
-        for (auto it = std::next(c.cbegin()); it != c.cend(); ++it)
-        {
-            auto u = *std::prev(it);
-            auto v = *it;
-            auto [e, exists] = edge(u, v, g);
-            if (exists)
-            {
-                usedEdges.emplace_back(e);
-            }
-            else
-            {
-                BOOST_ASSERT(allDists[u][v] != INVALID_EDGE_WEIGHT);
-                auto sp = extractPath(allPreds[u], u, v);
-                BOOST_ASSERT(!sp.empty());
-                for (auto it = std::next(sp.cbegin()); it != sp.cend(); ++it)
-                {
-                    auto u = *std::prev(it);
-                    auto v = *it;
-                    auto [e, exists] = edge(u, v, g);
-                    BOOST_ASSERT(exists);
-                    usedEdges.emplace_back(e);
-                }
-            }
-        }
-
-        for (auto e : make_iterator_range(edges(g)))
-        {
-            if (std::find(usedEdges.cbegin(), usedEdges.cend(), e) == usedEdges.cend())
-            {
-                // edge was not visited and considered useless -> remove
-                remove_edge(e, g);
-            }
-        }
+    // 4) Actual edge removal
+    for (const auto e : unusedEdges)
+    {
+        remove_edge(e, g);
     }
 }
 
