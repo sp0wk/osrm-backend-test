@@ -1,6 +1,8 @@
 #include <boost/test/unit_test.hpp>
 
-#include "engine/routing_algorithms/route_inspection.hpp"
+#include "engine/route_inspection/input_graph_adaptors.hpp"
+#include "engine/route_inspection/route_inspection.hpp"
+
 #include "util/node_based_graph.hpp"
 #include "util/typedefs.hpp"
 
@@ -9,12 +11,41 @@
 BOOST_AUTO_TEST_SUITE(route_inspection)
 
 using namespace osrm::util;
-namespace ra = osrm::engine::routing_algorithms;
-namespace rad = osrm::engine::routing_algorithms::detail;
+namespace ri = osrm::engine::route_inspection;
+namespace rid = osrm::engine::route_inspection::detail;
 
-// Use node-based BGL graph as RI graph for basic testing
-using BaseGraph = BglNodeBasedDynamicGraph;
-using BaseNode = BglNodeBasedDynamicGraph::Vertex;
+//-------------------------------------------------------------------------------------------------
+
+// Mock input graph for tests
+class MockInputGraphWrapper
+{
+  public:
+    using Graph = NodeBasedDynamicGraph; // nodes are edges in EBG
+
+    explicit MockInputGraphWrapper(const Graph &g) : g{g} {}
+
+    const Graph &GetSourceGraph() const noexcept { return g; }
+
+    // Interface implementation
+
+    auto GetOutEdgeRange(const NodeID v) const
+    {
+        const auto edges = g.GetAdjacentEdgeRange(v);
+        return boost::adaptors::filter(edges,
+                                       [this](const auto e) { return !g.GetEdgeData(e).reversed; });
+    }
+
+    EdgeWeight GetEdgeWeight(const NodeID, const EdgeID e) const { return g.GetEdgeData(e).weight; }
+
+    NodeID GetTarget(const EdgeID e) const { return g.GetTarget(e); }
+
+  private:
+    const Graph &g;
+};
+
+BOOST_CONCEPT_ASSERT((ri::InputGraphConcept<MockInputGraphWrapper>));
+
+//-------------------------------------------------------------------------------------------------
 
 // helpers
 namespace
@@ -28,16 +59,15 @@ inline auto weight(int w)
 }
 
 template <bool useOptimizedGraph = true>
-auto makeRiGraph(NodeBasedDynamicGraph &g, const BaseNode start)
+auto makeRiGraph(const NodeBasedDynamicGraph &g, const NodeID start)
 {
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(rad::isStronglyConnectedGraph(baseGraph));
-    auto rig = rad::buildRiGraph(baseGraph, start);
-    BOOST_REQUIRE(rad::isStronglyConnectedGraph(rig));
+    MockInputGraphWrapper ig{g};
+    auto rig = rid::buildRiGraph(ig, start);
+    BOOST_REQUIRE(rid::isStronglyConnectedGraph(rig));
     if constexpr (useOptimizedGraph)
     {
-        rad::optimizeRiGraph(rig);
-        BOOST_REQUIRE(rad::isStronglyConnectedGraph(rig));
+        rid::optimizeRiGraph(rig);
+        BOOST_REQUIRE(rid::isStronglyConnectedGraph(rig));
     }
     return rig;
 }
@@ -45,8 +75,8 @@ auto makeRiGraph(NodeBasedDynamicGraph &g, const BaseNode start)
 template <typename RIG, typename Vertex = boost::graph_traits<RIG>::vertex_descriptor>
 auto runRouteInspection(RIG &rig, const Vertex start)
 {
-    const auto p = rad::routeInspectionImpl(rig, start);
-    return ra::prepareFinalRoute(rig, p);
+    const auto p = rid::routeInspectionImpl(rig, start);
+    return ri::prepareFinalRoute(rig, p);
 }
 
 template <typename G, typename V> void testEdge(const G &g, V u, V v, int expectedWeight)
@@ -84,7 +114,10 @@ BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
     g.InsertEdge(v2, v3, w);
     g.InsertEdge(v3, v1, w);
 
-    BOOST_TEST(!rad::isStronglyConnectedGraph(BaseGraph{g}));
+    MockInputGraphWrapper ig{g};
+    auto rig = rid::buildRiGraph(ig, v0);
+
+    BOOST_TEST(!rid::isStronglyConnectedGraph(rig));
 }
 
 BOOST_AUTO_TEST_CASE(test_shortest_path)
@@ -103,14 +136,14 @@ BOOST_AUTO_TEST_CASE(test_shortest_path)
     g.InsertEdge(v0, v1, w);
     g.InsertEdge(v1, v2, w);
     g.InsertEdge(v2, v3, w);
+    g.InsertEdge(v3, v0, w);
     auto e13 = g.InsertEdge(v1, v3, weight(100));
-
-    BaseGraph baseGraph{g};
 
     BOOST_TEST_CONTEXT("Costly 1->3 edge")
     {
         g.GetEdgeData(e13).weight = EdgeWeight{100};
-        const auto paths = rad::oneToMany(baseGraph, v0, {v3});
+        auto rig = makeRiGraph<false>(g, v0);
+        const auto paths = rid::oneToMany(rig, v0, {v3});
 
         BOOST_REQUIRE(paths.size() == 1);
         BOOST_TEST(paths[0].cost == EdgeWeight{30});
@@ -125,7 +158,8 @@ BOOST_AUTO_TEST_CASE(test_shortest_path)
     BOOST_TEST_CONTEXT("Cheap 1->3 edge")
     {
         g.GetEdgeData(e13).weight = EdgeWeight{1};
-        const auto paths = rad::oneToMany(baseGraph, v0, {v3});
+        auto rig = makeRiGraph<false>(g, v0);
+        const auto paths = rid::oneToMany(rig, v0, {v3});
 
         BOOST_REQUIRE(paths.size() == 1);
         BOOST_TEST(paths[0].cost == EdgeWeight{11});
@@ -155,10 +189,8 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph_trivial)
     g.InsertEdge(v2, v3, w);
     g.InsertEdge(v3, v0, w);
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(rad::isEulerianGraph(baseGraph));
-
     auto rig = makeRiGraph<false>(g, v0);
+    BOOST_REQUIRE(rid::isEulerianGraph(rig));
     const auto path = runRouteInspection(rig, 0);
 
     BOOST_REQUIRE(path.size() == 5);
@@ -194,10 +226,8 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
     g.InsertEdge(v3, v1, w);
     g.InsertEdge(v3, v2, w);
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(rad::isEulerianGraph(baseGraph));
-
     auto rig = makeRiGraph<false>(g, v0);
+    BOOST_REQUIRE(rid::isEulerianGraph(rig));
     const auto path = runRouteInspection(rig, 0);
 
     BOOST_REQUIRE(path.size() == 9);
@@ -233,10 +263,8 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_trivial)
     g.InsertEdge(v3, v1, w);
     g.InsertEdge(v3, v2, w);
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
-
     auto rig = makeRiGraph<false>(g, v0);
+    BOOST_REQUIRE(!rid::isEulerianGraph(rig));
     const auto path = runRouteInspection(rig, 0);
 
     BOOST_REQUIRE(path.size() == 8);
@@ -279,9 +307,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection)
     g.InsertEdge(v4, v0, w);
     g.InsertEdge(v5, v2, weight(10));
     g.InsertEdge(v5, v3, w);
-
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
 
     auto rig = makeRiGraph<false>(g, v0);
     const auto path = runRouteInspection(rig, 0);
@@ -342,9 +367,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_costing)
     g.InsertEdge(v7, v8, w);
     g.InsertEdge(v8, v1, w);
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
-
     BOOST_TEST_CONTEXT("Equal weights")
     {
         auto rig = makeRiGraph<false>(g, v0);
@@ -375,10 +397,8 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_costing)
 
     BOOST_TEST_CONTEXT("Costly 7->1 edge")
     {
-        auto g2 = g;
-        g2.GetEdgeData(e71).weight = EdgeWeight{100};
-
-        auto rig = makeRiGraph<false>(g2, v0);
+        g.GetEdgeData(e71).weight = EdgeWeight{100};
+        auto rig = makeRiGraph<false>(g, v0);
         const auto path = runRouteInspection(rig, 0);
 
         BOOST_REQUIRE(path.size() == 20);
@@ -671,10 +691,8 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend_eulerian)
     g.InsertEdge(v6, v1, w);
     g.InsertEdge(v7, v0, w);
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(rad::isEulerianGraph(baseGraph));
-
     auto rig = makeRiGraph(g, v0);
+    BOOST_REQUIRE(rid::isEulerianGraph(rig));
     const auto path = runRouteInspection(rig, 0);
 
     BOOST_REQUIRE(path.size() == 10);
@@ -726,9 +744,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     g.InsertEdge(v6, v1, w);
     g.InsertEdge(v7, v8, weight(12));
     g.InsertEdge(v8, v0, w);
-
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
 
     auto rig = makeRiGraph(g, v0);
     const auto path = runRouteInspection(rig, 0);
@@ -792,9 +807,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_many_disjoints)
     g.InsertEdge(v9, v2, weight(10));
     g.InsertEdge(v9, v3, weight(8));
 
-    BaseGraph baseGraph{g};
-    BOOST_REQUIRE(!rad::isEulerianGraph(baseGraph));
-
     BOOST_TEST_CONTEXT("Use 5->8 edge")
     {
         auto rig = makeRiGraph(g, v0);
@@ -819,10 +831,8 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_many_disjoints)
 
     BOOST_TEST_CONTEXT("Avoid 5->8 edge")
     {
-        auto g2 = g;
-        g2.GetEdgeData(e58).weight = EdgeWeight{100};
-
-        auto rig = makeRiGraph(g2, v0);
+        g.GetEdgeData(e58).weight = EdgeWeight{100};
+        auto rig = makeRiGraph(g, v0);
         const auto path = runRouteInspection(rig, 0);
 
         BOOST_REQUIRE(path.size() == 15);

@@ -1,12 +1,14 @@
 #ifndef OSRM_ROUTE_INSPECTION_HPP
 #define OSRM_ROUTE_INSPECTION_HPP
 
-#include "util/bgl_graph_adaptor.hpp"
+#include "engine/datafacade.hpp"
+#include "engine/route_inspection/input_graph_adaptors.hpp"
 #include "util/coordinate.hpp"
 #include "util/exception.hpp"
 #include "util/log.hpp"
 #include "util/typedefs.hpp"
 
+#include <boost/concept/assert.hpp>
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/point_xy.hpp>
 #include <boost/geometry/geometries/polygon.hpp>
@@ -14,6 +16,7 @@
 #include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/dijkstra_shortest_paths.hpp>
 #include <boost/graph/filtered_graph.hpp>
+#include <boost/graph/graph_concepts.hpp>
 #include <boost/graph/reverse_graph.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
@@ -26,11 +29,12 @@
 #include <cstdlib>
 #include <iterator>
 #include <optional>
+#include <queue>
 #include <stack>
 #include <tuple>
 #include <vector>
 
-namespace osrm::engine::routing_algorithms
+namespace osrm::engine::route_inspection
 {
 
 namespace detail
@@ -41,22 +45,17 @@ namespace detail
 //-------------------------------------------------------------------------------------------------
 
 // Main graph types (BGL based) used for route inspection implementation
-template <typename BNode, typename BEdge>
-using RiGraphBase = boost::adjacency_list<
+using RiGraph = boost::adjacency_list<
     boost::vecS,
     boost::vecS,
     boost::bidirectionalS,
-    boost::property<boost::vertex_name_t, BNode>,
-    boost::property<boost::edge_name_t, BEdge, boost::property<boost::edge_weight_t, EdgeWeight>>>;
+    boost::property<boost::vertex_name_t, NodeID>,
+    boost::property<boost::edge_name_t, EdgeID, boost::property<boost::edge_weight_t, EdgeWeight>>>;
 
-template <typename BNode, typename BEdge> struct RiGraph : public RiGraphBase<BNode, BEdge>
-{
-    using BaseNode = BNode;
-    using BaseEdge = BEdge;
-};
+using Vertex = boost::graph_traits<RiGraph>::vertex_descriptor;
+using Edge = boost::graph_traits<RiGraph>::edge_descriptor;
 
 // Graph edge hasher
-template <typename Graph, typename Edge = boost::graph_traits<Graph>::edge_descriptor>
 struct EdgeHash
 {
     std::size_t operator()(const Edge &e) const noexcept
@@ -67,11 +66,11 @@ struct EdgeHash
         return seed;
     }
 
-    const Graph &g;
+    const RiGraph &g;
 };
 
 // Represents a sequence of nodes (vertices)
-template <typename Vertex> using Path = std::vector<Vertex>;
+using Path = std::vector<Vertex>;
 
 using NodeDegreeDelta = int16_t;
 // Stores difference between incoming (negative) and outgoing (positive) edges for nodes where array
@@ -79,19 +78,19 @@ using NodeDegreeDelta = int16_t;
 using NodeDegreeDeltaArray = std::vector<NodeDegreeDelta>;
 
 // Represents shortest path and its total cost
-template <typename Vertex> struct ShortestPath
+struct ShortestPath
 {
-    Path<Vertex> path;
+    Path path;
     EdgeWeight cost{INVALID_EDGE_WEIGHT};
 };
 
 // Represents shortest paths between all sources/targets
-template <typename Vertex> struct PathMatrix
+struct PathMatrix
 {
     struct Column
     {
         Vertex target;
-        ShortestPath<Vertex> path;
+        ShortestPath path;
     };
 
     struct Row
@@ -119,7 +118,7 @@ using MinCostFlow = std::vector<EdgeFlow>;
 //-------------------------------------------------------------------------------------------------
 
 // Checks whether directed graph is strongly connected
-template <typename Graph> bool isStronglyConnectedGraph(const Graph &g)
+inline bool isStronglyConnectedGraph(const RiGraph &g)
 {
     using namespace boost;
     // TODO consider using TarjanSCC from osrm::util instead
@@ -130,7 +129,7 @@ template <typename Graph> bool isStronglyConnectedGraph(const Graph &g)
 }
 
 // Collects edge degree delta for all nodes in the graph
-template <typename Graph> NodeDegreeDeltaArray collectNodeDegreeDeltas(const Graph &g)
+inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const RiGraph &g)
 {
     NodeDegreeDeltaArray deltas(num_vertices(g));
     auto [b, e] = edges(g);
@@ -156,14 +155,13 @@ inline bool isEulerianGraph(const NodeDegreeDeltaArray &deltas)
 }
 
 // Checks whether graph is Eulerian
-template <typename Graph> bool isEulerianGraph(const Graph &g)
+inline bool isEulerianGraph(const RiGraph &g)
 {
     return isEulerianGraph(collectNodeDegreeDeltas(g));
 }
 
 // Finds Eulerian circuit on directed Eulerian graph using Hierholzer’s algorithm
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-Path<Vertex> findEulerianCircuit(const Graph &g, const Vertex source)
+inline Path findEulerianCircuit(const RiGraph &g, const Vertex source)
 {
     using EdgeIt = decltype(out_edges(source, g).first);
 
@@ -176,7 +174,7 @@ Path<Vertex> findEulerianCircuit(const Graph &g, const Vertex source)
         unusedEdges[*vb] = out_edges(*vb, g).first;
     }
     std::stack<Vertex> st;
-    Path<Vertex> circuit;
+    Path circuit;
     circuit.reserve(nbOfVertices);
 
     // find circuit
@@ -215,7 +213,7 @@ Path<Vertex> findEulerianCircuit(const Graph &g, const Vertex source)
 //-------------------------------------------------------------------------------------------------
 
 // Finds shortest paths from source s to all graph's vertices
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
+template <typename Graph>
 void shortestPaths(const Graph &g,
                    const Vertex s,
                    std::vector<Vertex> &preds,
@@ -229,10 +227,9 @@ void shortestPaths(const Graph &g,
 }
 
 // Extracts shortest paths from s to t using result of shortestPaths()
-template <typename Vertex>
-Path<Vertex> extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
+Path extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
 {
-    Path<Vertex> result;
+    Path result;
     // initially reserve x2 of nodes between s and t
     result.reserve(std::max<size_t>(16, (t > s ? t - s : s - t) * 2));
     Vertex curNode{t};
@@ -252,8 +249,7 @@ Path<Vertex> extractPath(const std::vector<Vertex> &preds, const Vertex s, const
 }
 
 // Finds shortest paths from source s to target t
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-ShortestPath<Vertex> shortestPath(const Graph &g, const Vertex s, const Vertex t)
+inline ShortestPath shortestPath(const RiGraph &g, const Vertex s, const Vertex t)
 {
     using namespace boost;
 
@@ -261,7 +257,7 @@ ShortestPath<Vertex> shortestPath(const Graph &g, const Vertex s, const Vertex t
     {
         Terminator(const Vertex t) : default_dijkstra_visitor(), target{t} {}
 
-        void examine_vertex(const Vertex v, const Graph &) const
+        void examine_vertex(const Vertex v, const RiGraph &) const
         {
             if (v == target)
             {
@@ -296,9 +292,8 @@ ShortestPath<Vertex> shortestPath(const Graph &g, const Vertex s, const Vertex t
 }
 
 // Finds shortest paths from a source vertex to all target vertices
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-std::vector<ShortestPath<Vertex>>
-oneToMany(const Graph &g, const Vertex source, const std::vector<Vertex> &targets)
+inline std::vector<ShortestPath>
+oneToMany(const RiGraph &g, const Vertex source, const std::vector<Vertex> &targets)
 {
     // prepare maps for predecessors and distances
     std::vector<Vertex> preds(num_vertices(g));
@@ -308,7 +303,7 @@ oneToMany(const Graph &g, const Vertex source, const std::vector<Vertex> &target
     shortestPaths(g, source, preds, dists);
 
     // extract paths for all targets
-    std::vector<ShortestPath<Vertex>> paths;
+    std::vector<ShortestPath> paths;
     paths.reserve(targets.size());
     for (auto t : targets)
     {
@@ -328,14 +323,13 @@ oneToMany(const Graph &g, const Vertex source, const std::vector<Vertex> &target
 }
 
 // Finds shortest paths between all sources and targets
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-PathMatrix<Vertex>
-manyToMany(const Graph &g, const std::vector<Vertex> &sources, const std::vector<Vertex> &targets)
+inline PathMatrix
+manyToMany(const RiGraph &g, const std::vector<Vertex> &sources, const std::vector<Vertex> &targets)
 {
-    PathMatrix<Vertex> m;
+    PathMatrix m;
     // allocate matrix
     m.rows.resize(sources.size());
-    for (auto [idx, s] : boost::adaptors::index(sources))
+    for (const auto &[idx, s] : boost::adaptors::index(sources))
     {
         auto &row = m.rows[idx];
         row.source = s;
@@ -353,7 +347,7 @@ manyToMany(const Graph &g, const std::vector<Vertex> &sources, const std::vector
                               BOOST_ASSERT(targets.size() == paths.size());
                               // populate matrix
                               auto &row = m.rows[sIdx];
-                              for (auto [tIdx, t] : boost::adaptors::index(targets))
+                              for (const auto &[tIdx, t] : boost::adaptors::index(targets))
                               {
                                   auto &col = row.columns[tIdx];
                                   col.target = t;
@@ -379,10 +373,9 @@ manyToMany(const Graph &g, const std::vector<Vertex> &sources, const std::vector
  * @param maxCapacity total amount of surplus
  * @return auto built graph together with super-source and super-sink nodes
  */
-template <typename Vertex>
-auto buildMcfGraph(const PathMatrix<Vertex> &pathMatrix,
-                   const NodeDegreeDeltaArray &deltas,
-                   const uint32_t maxCapacity = std::numeric_limits<uint32_t>::max())
+inline auto buildMcfGraph(const PathMatrix &pathMatrix,
+                          const NodeDegreeDeltaArray &deltas,
+                          const uint32_t maxCapacity = std::numeric_limits<uint32_t>::max())
 {
     using namespace boost;
 
@@ -474,10 +467,9 @@ auto buildMcfGraph(const PathMatrix<Vertex> &pathMatrix,
  * @param maxCapacity total amount of surplus
  * @return MinCostFlow edges with positive flow
  */
-template <typename Vertex>
-MinCostFlow solveMinCostFlow(const PathMatrix<Vertex> &pathMatrix,
-                             const NodeDegreeDeltaArray &deltas,
-                             const size_t maxCapacity = std::numeric_limits<size_t>::max())
+inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
+                                    const NodeDegreeDeltaArray &deltas,
+                                    const size_t maxCapacity = std::numeric_limits<size_t>::max())
 {
     using namespace boost;
 
@@ -514,8 +506,7 @@ MinCostFlow solveMinCostFlow(const PathMatrix<Vertex> &pathMatrix,
 
 // Add deficit edges to imbalanced graph through solving min-cost flow problem to make graph
 // Eulerian
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-bool augmentImbalancedGraph(Graph &g, NodeDegreeDeltaArray &deltas)
+inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
 {
     // collect surplus (delta < 0) and deficit (delta > 0) nodes
     // NOTE: normally for MCF nodes with delta > 0 become surplus nodes but, for convenience, we
@@ -613,84 +604,75 @@ struct NoFilter
 //              ↑ 1                  \ | /
 //              |                     \|/
 //                                     o 1
-template <typename BaseGraph,
-          typename BaseNode = boost::graph_traits<BaseGraph>::vertex_descriptor,
-          typename BaseEdge = boost::graph_traits<BaseGraph>::edge_descriptor,
-          typename EdgeFilter = NoFilter>
-auto buildRiGraph(const BaseGraph &g, const BaseNode start, const EdgeFilter &edgeFilter = {})
+template <typename BaseGraph, typename EdgeFilter = NoFilter>
+auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edgeFilter = {})
 {
     using namespace boost;
 
-    using RIG = RiGraph<BaseNode, BaseEdge>;
-    using Vertex = graph_traits<RIG>::vertex_descriptor;
-    using FilteredGraph = filtered_graph<BaseGraph, EdgeFilter>;
+    BOOST_CONCEPT_ASSERT((InputGraphConcept<BaseGraph>));
 
-    RIG out;
+    RiGraph out;
 
-    struct RiGraphBuilderVis : default_bfs_visitor
+    // helper
+    auto const addEdge =
+        [&out](const Vertex u, const Vertex v, const EdgeID edgeName, const EdgeWeight weight)
     {
-        using V = graph_traits<FilteredGraph>::vertex_descriptor;
-        using E = graph_traits<FilteredGraph>::edge_descriptor;
-
-        RiGraphBuilderVis(RIG &o, const BaseNode start) : default_bfs_visitor(), out{o}
-        {
-            // add first vertex
-            curVertex = add_vertex(start, out);
-            vmap[start] = curVertex;
-        }
-
-        // before iterating edges
-        void examine_vertex(const V u, const FilteredGraph &)
-        {
-            BOOST_ASSERT(vmap.contains(u));
-            curVertex = vmap[u];
-        }
-
-        // new vertex and edge
-        void tree_edge(const E e, const FilteredGraph &fg)
-        {
-            auto tv = target(e, fg);
-            Vertex newVertex = add_vertex(tv, out);
-            vmap[tv] = newVertex;
-            addEdge(curVertex, newVertex, e, get(edge_weight, fg, e));
-        }
-
-        // new edge only
-        void non_tree_edge(const E e, const FilteredGraph &fg)
-        {
-            // connect cur node to a previously added NBG node
-            auto targetVertex = vmap[target(e, fg)];
-            addEdge(curVertex, targetVertex, e, get(edge_weight, fg, e));
-        }
-
-        // helper
-        void addEdge(const Vertex u, const Vertex v, const E edgeName, const EdgeWeight weight)
-        {
-            auto [e, isNew] = add_edge(u, v, out);
-            BOOST_ASSERT(isNew);
-            put(edge_name, out, e, edgeName);
-            put(edge_weight, out, e, weight);
-        }
-
-        RIG &out;
-        std::unordered_map<V, Vertex> vmap; // old-new vertex mappings
-        Vertex curVertex;
+        auto [e, isNew] = add_edge(u, v, out);
+        BOOST_ASSERT(isNew);
+        put(edge_name, out, e, edgeName);
+        put(edge_weight, out, e, weight);
     };
 
-    FilteredGraph fg{g, edgeFilter};
-    // traverse and build a subgraph
-    breadth_first_search(fg, start, visitor(RiGraphBuilderVis{out, start}));
+    // BFS traversal with filtering
+    std::unordered_map<NodeID, Vertex> vmap; // old-new vertex mappings
+    std::queue<NodeID> q;
+
+    // add first vertex
+    vmap[start] = add_vertex(start, out);
+    q.push(start);
+
+    while (!q.empty())
+    {
+        const auto u = q.front();
+        q.pop();
+        const auto curVertex = vmap[u];
+
+        for (const auto e : g.GetOutEdgeRange(u))
+        {
+            if (!edgeFilter(e))
+            {
+                continue;
+            }
+
+            auto v = g.GetTarget(e);
+            auto w = g.GetEdgeWeight(u, e);
+
+            if (!vmap.contains(v))
+            {
+                // unvisited -> new vertex and edge
+                Vertex newVertex = add_vertex(v, out);
+                vmap[v] = newVertex;
+                // new edge
+                addEdge(curVertex, newVertex, e, w);
+                q.push(v);
+            }
+            else
+            {
+                // already visited -> new edge only
+                auto targetVertex = vmap[v];
+                addEdge(curVertex, targetVertex, e, w);
+            }
+        }
+    }
 
     return out;
 }
 
 // Greedily DFS traverse RI graph to create a circuit with possible disjoints
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-auto getDfsCircuitGreedy(const Graph &g, const Vertex start)
+inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
 {
     using namespace boost;
 
-    using Edge = boost::graph_traits<Graph>::edge_descriptor;
     using SortedEdges = std::vector<Edge>;
     using EdgeIt = SortedEdges::const_iterator;
     using EdgeState = std::pair<EdgeIt, SortedEdges>;
@@ -721,7 +703,7 @@ auto getDfsCircuitGreedy(const Graph &g, const Vertex start)
     }
 
     // prepare result
-    Path<Vertex> circuit;
+    Path circuit;
     std::unordered_set<Vertex> disjointInNodes;
     std::unordered_set<Vertex> disjointOutNodes;
     circuit.reserve(nbOfVertices);
@@ -805,13 +787,11 @@ auto getDfsCircuitGreedy(const Graph &g, const Vertex start)
 }
 
 // Greedily examine graph and collect optimal set of edges for route inspection
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-auto collectMinCostEdgeSet(const Graph &g, const Vertex start)
+inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
 {
     using namespace boost;
 
-    using Edge = boost::graph_traits<Graph>::edge_descriptor;
-    using ResultSet = std::unordered_set<Edge, EdgeHash<Graph>>;
+    using ResultSet = std::unordered_set<Edge, EdgeHash>;
 
     ResultSet usedEdges{0, EdgeHash{g}};
     usedEdges.reserve(num_edges(g));
@@ -879,10 +859,8 @@ auto collectMinCostEdgeSet(const Graph &g, const Vertex start)
 }
 
 // Removes edges from a graph which can be replaced with a cheaper shortest path
-template <typename Graph> auto collectCostlyEdges(Graph &g)
+inline auto collectCostlyEdges(RiGraph &g)
 {
-    using Edge = boost::graph_traits<Graph>::edge_descriptor;
-
     auto const isShortestPath = [&g](const Edge e)
     {
         auto u = source(e, g);
@@ -910,12 +888,9 @@ template <typename Graph> auto collectCostlyEdges(Graph &g)
 }
 
 // Optimize RiGraph connectivity to minimize the number of transition edges
-template <typename Graph> void optimizeRiGraph(Graph &g)
+void optimizeRiGraph(RiGraph &g)
 {
     using namespace boost;
-
-    using Vertex = boost::graph_traits<Graph>::vertex_descriptor;
-    using Edge = boost::graph_traits<Graph>::edge_descriptor;
 
     // 1) Preprocessing to prune edges which are not shortest paths
     const auto costlyEdges = collectCostlyEdges(g);
@@ -948,8 +923,7 @@ template <typename Graph> void optimizeRiGraph(Graph &g)
 }
 
 // Route inspection (directed Chinese Postman Problem) solver
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-Path<Vertex> routeInspectionImpl(Graph &g, const Vertex s)
+inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
 {
     BOOST_ASSERT_MSG(isStronglyConnectedGraph(g), "Graph is not strongly connected\n");
 
@@ -1028,14 +1002,36 @@ inline bool isInsidePolygon(const Polygon &polygon, const Point point)
     return bg::within(point, polygon);
 }
 
-// BaseGraph edge filter based on the area inside a polygon
-struct PolygonFilter
+template <typename DataFacade>
+util::Coordinate getNodeEndpoint(const DataFacade &facade, const NodeID u)
 {
-    template <typename BaseEdge> bool operator()(const BaseEdge &) const
+    auto gi = facade.GetGeometryIndex(u);
+    if (gi.forward)
     {
-        // TODO fetch edge endpoint
-        return isInsidePolygon(*polygon, Point{});
+        auto geom = facade.GetUncompressedForwardGeometry(gi.id);
+        BOOST_ASSERT(!geom.empty());
+        auto endNode = *std::crbegin(geom);
+        return facade.GetCoordinateOfNode(endNode);
     }
+    else
+    {
+        auto geom = facade.GetUncompressedReverseGeometry(gi.id);
+        BOOST_ASSERT(!geom.empty());
+        auto endNode = *std::crbegin(geom);
+        return facade.GetCoordinateOfNode(endNode);
+    }
+}
+
+// Input graph edge filter based on the area inside a polygon
+template <typename DataFacade> struct PolygonFilter
+{
+    bool operator()(const EdgeID &e) const
+    {
+        auto p = getNodeEndpoint(facade, facade.GetTarget(e));
+        return isInsidePolygon(*polygon, Point{p});
+    }
+
+    const DataFacade &facade;
     const Polygon *polygon{nullptr};
 };
 
@@ -1044,14 +1040,11 @@ struct PolygonFilter
 /**
  * @brief Extracts original NodeIDs from the resulting path and creates final route result.
  *
- * @tparam Graph RI graph type used to create a closed path
- * @tparam Vertex graph's vertex type
  * @param g RI graph used to create a closed path
  * @param path resulting closed path
  * @return std::vector<NodeID> final route result
  */
-template <typename Graph, typename Vertex = boost::graph_traits<Graph>::vertex_descriptor>
-std::vector<NodeID> prepareFinalRoute(const Graph &g, const detail::Path<Vertex> &path)
+std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const detail::Path &path)
 {
     if (path.empty())
     {
@@ -1059,11 +1052,7 @@ std::vector<NodeID> prepareFinalRoute(const Graph &g, const detail::Path<Vertex>
         return {};
     }
 
-    const auto toNodeID = [&g](const Vertex v)
-    {
-        auto baseNode = get(boost::vertex_name, g, v);
-        return static_cast<NodeID>(baseNode);
-    };
+    const auto toNodeID = [&g](const detail::Vertex v) { return get(boost::vertex_name, g, v); };
 
     std::vector<NodeID> route;
     route.reserve(path.size());
@@ -1077,6 +1066,8 @@ std::vector<NodeID> prepareFinalRoute(const Graph &g, const detail::Path<Vertex>
         // NBG based RiGraph has two nodes per EBG node, so we ignore duplication
         if (route.back() != n)
         {
+            // TODO: improve final route by replacing costly edges with shortest paths (which
+            // possibly go beyond target polygon)
             route.emplace_back(n);
         }
     }
@@ -1088,40 +1079,37 @@ std::vector<NodeID> prepareFinalRoute(const Graph &g, const detail::Path<Vertex>
  * @brief Runs route inspection algorithm on a directed edge-based graph and returns resulting
  * closed path.
  *
- * @tparam EdgeBasedGraph directed edge-based graph type
- * @param graph directed edge-based graph
- * @param source starting NodeID for a node inside the graph
+ * @tparam Algorithm routing algorithm type
+ * @param facade Algorithm-specific DataFacade representing input graph
+ * @param start PhantomNode matching start location
  * @param polygonPoints list of polygon points limiting route inspection area
  * @return std::vector<NodeID> resulting closed path as a list of node IDs (empty if not found)
  */
-template <typename EdgeBasedGraph>
-std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
-                                    const NodeID source,
+template <typename Algorithm>
+std::vector<NodeID> routeInspection(const DataFacade<Algorithm> &facade,
+                                    const PhantomNode &start,
                                     const std::vector<util::Coordinate> &polygonPoints = {})
 {
     using namespace util;
     using namespace detail;
 
-    using BaseGraph = BglGraphAdaptor<EdgeBasedGraph>;
-    using BaseNode = boost::graph_traits<BaseGraph>::vertex_descriptor;
-    using BaseEdge = boost::graph_traits<BaseGraph>::edge_descriptor;
-    using RIG = RiGraph<BaseNode, BaseEdge>;
-    using Vertex = boost::graph_traits<RIG>::vertex_descriptor;
+    using BaseGraph = AlgorithmBasedInputGraphWrapper<Algorithm>;
 
     static constexpr double MAX_POLYGON_AREA = 0;
 
     // verify input
-    const auto s = static_cast<BaseNode>(source);
+    const NodeID s =
+        start.IsValidForwardSource() ? start.forward_segment_id.id : start.reverse_segment_id.id;
     std::optional<Polygon> polygon;
     if (!polygonPoints.empty())
     {
         try
         {
             polygon = createPolygon(polygonPoints, MAX_POLYGON_AREA);
-            // if (!isInsidePolygon(polygon, toPoint(start)))
-            // {
-            //     throw exception{"Start point should be inside the polygon"};
-            // }
+            if (!isInsidePolygon(*polygon, toPoint(start.location)))
+            {
+                throw exception{"Start point should be inside the polygon"};
+            }
         }
         catch (const util::exception &e)
         {
@@ -1131,8 +1119,8 @@ std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
     }
 
     // prepare graph data
-    BaseGraph baseGraph{graph};
-    RIG rig;
+    BaseGraph baseGraph{facade};
+    RiGraph rig;
 
     if (polygon)
     {
@@ -1160,6 +1148,6 @@ std::vector<NodeID> routeInspection(const EdgeBasedGraph &graph,
     return prepareFinalRoute(rig, path);
 }
 
-} // namespace osrm::engine::routing_algorithms
+} // namespace osrm::engine::route_inspection
 
 #endif /* OSRM_ROUTE_INSPECTION_HPP */

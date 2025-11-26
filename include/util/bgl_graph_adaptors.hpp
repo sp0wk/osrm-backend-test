@@ -1,5 +1,5 @@
-#ifndef OSRM_UTIL_BGL_GRAPH_ADAPTOR_HPP
-#define OSRM_UTIL_BGL_GRAPH_ADAPTOR_HPP
+#ifndef OSRM_UTIL_BGL_GRAPH_ADAPTORS_HPP
+#define OSRM_UTIL_BGL_GRAPH_ADAPTORS_HPP
 
 #include "storage/shared_memory_ownership.hpp"
 #include "util/node_based_graph.hpp"
@@ -26,16 +26,15 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
 {
   public:
     using Graph = NodeBasedDynamicGraph;
-    using Vertex = typename Graph::NodeIterator;
-    using Edge = typename Graph::EdgeIterator;
+    using Vertex = NodeID;
+    using Edge = EdgeID;
     using Weight = EdgeWeight;
     using VertexProperty = boost::property<boost::vertex_index_t, Vertex>;
     using EdgeProperty = boost::property<boost::edge_weight_t, Weight>;
 
-    explicit BglGraphAdaptor(Graph &graph) : g{graph} {}
+    explicit BglGraphAdaptor(const Graph &graph) : g{graph} {}
 
     const Graph &GetGraph() const noexcept { return g; }
-    Graph &GetGraph() noexcept { return g; }
 
     // convenience methods
 
@@ -85,20 +84,6 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
     friend auto out_degree(const Vertex u, const BglGraphAdaptor &g)
     {
         return g.g.GetDirectedOutDegree(u);
-    }
-
-    friend Vertex add_vertex(VertexProperty, BglGraphAdaptor &g)
-    {
-        // vertex index is vertex itself
-        return g.g.InsertNode();
-    }
-
-    friend Edge add_edge(Vertex u, Vertex v, EdgeProperty ep, BglGraphAdaptor &g)
-    {
-        BOOST_ASSERT(u < num_vertices(g) && v < num_vertices(g));
-        Graph::EdgeData data;
-        data.weight = ep.m_value;
-        return g.g.InsertEdge(u, v, data);
     }
 
     // BGL property maps
@@ -154,7 +139,7 @@ template <> class BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::Vie
     }
 
   private:
-    Graph &g;
+    const Graph &g;
 };
 
 using BglNodeBasedDynamicGraph = BglGraphAdaptor<NodeBasedDynamicGraph, storage::Ownership::View>;
@@ -220,4 +205,4 @@ BOOST_CONCEPT_ASSERT((boost::concepts::IncidenceGraph<osrm::util::BglNodeBasedDy
 BOOST_CONCEPT_ASSERT(
     (boost::concepts::VertexAndEdgeListGraph<osrm::util::BglNodeBasedDynamicGraph>));
 
-#endif // OSRM_UTIL_BGL_GRAPH_ADAPTOR_HPP
+#endif // OSRM_UTIL_BGL_GRAPH_ADAPTORS_HPP
