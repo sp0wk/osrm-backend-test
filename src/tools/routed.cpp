@@ -170,6 +170,12 @@ inline unsigned generateServerProgramOptions(const int argc,
         ("max-trip-size",
          value<int>(&config.max_locations_trip)->default_value(100),
          "Max. locations supported in trip query") //
+        ("max-ri-polygon-points",
+         value<int>(&config.max_ri_polygon_points)->default_value(100),
+         "Max. polygon points supported in route-inspection query") //
+        ("max-ri-polygon-area-km-sqr",
+         value<int>(&config.max_ri_polygon_area_km_sqr)->default_value(100 * 100),
+         "Max. polygon area (in km^2) in route-inspection query") //
         ("max-table-size",
          value<int>(&config.max_locations_distance_table)->default_value(100),
          "Max. locations supported in distance table query") //

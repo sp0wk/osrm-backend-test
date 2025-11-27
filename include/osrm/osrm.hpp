@@ -41,6 +41,7 @@ namespace json = util::json;
 using engine::EngineConfig;
 using engine::api::MatchParameters;
 using engine::api::NearestParameters;
+using engine::api::RouteInspectionParameters;
 using engine::api::RouteParameters;
 using engine::api::TableParameters;
 using engine::api::TileParameters;
@@ -57,6 +58,7 @@ using engine::api::TripParameters;
  *  - Trip: shortest round trip between coordinates
  *  - Match: snaps noisy coordinate traces to the road network
  *  - Tile: vector tiles with internal graph representation
+ *  - RouteInspection: shortest round trip covering all roads in the area
  *
  *  All services take service-specific parameters, fill a JSON object, and return a status code.
  */
@@ -136,6 +138,17 @@ class OSRM final
      */
     Status Tile(const TileParameters &parameters, std::string &result) const;
     Status Tile(const TileParameters &parameters, engine::api::ResultT &result) const;
+
+    /**
+     * RouteInspection: shortest round trip covering all roads in the area
+     *
+     * \param parameters RI query specific parameters
+     * \return Status indicating success for the query or failure
+     * \see Status, RouteInspectionParameters and json::Object
+     */
+    Status RouteInspection(const RouteInspectionParameters &parameters, json::Object &result) const;
+    Status RouteInspection(const RouteInspectionParameters &parameters,
+                           engine::api::ResultT &result) const;
 
   private:
     std::unique_ptr<engine::EngineInterface> engine_;

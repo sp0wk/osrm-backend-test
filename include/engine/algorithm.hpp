@@ -46,9 +46,6 @@ template <typename AlgorithmT> struct HasMapMatching final : std::false_type
 template <typename AlgorithmT> struct HasManyToManySearch final : std::false_type
 {
 };
-template <typename AlgorithmT> struct HasRouteInspection final : std::false_type
-{
-};
 template <typename AlgorithmT> struct SupportsDistanceAnnotationType final : std::false_type
 {
 };
@@ -75,9 +72,6 @@ template <> struct HasMapMatching<ch::Algorithm> final : std::true_type
 template <> struct HasManyToManySearch<ch::Algorithm> final : std::true_type
 {
 };
-template <> struct HasRouteInspection<ch::Algorithm> final : std::false_type
-{
-};
 template <> struct SupportsDistanceAnnotationType<ch::Algorithm> final : std::true_type
 {
 };
@@ -102,9 +96,6 @@ template <> struct HasMapMatching<mld::Algorithm> final : std::true_type
 {
 };
 template <> struct HasManyToManySearch<mld::Algorithm> final : std::true_type
-{
-};
-template <> struct HasRouteInspection<mld::Algorithm> final : std::true_type
 {
 };
 template <> struct SupportsDistanceAnnotationType<mld::Algorithm> final : std::false_type

@@ -3,6 +3,7 @@
 #include "engine/algorithm.hpp"
 #include "engine/api/match_parameters.hpp"
 #include "engine/api/nearest_parameters.hpp"
+#include "engine/api/route_inspection_parameters.hpp"
 #include "engine/api/route_parameters.hpp"
 #include "engine/api/table_parameters.hpp"
 #include "engine/api/trip_parameters.hpp"
@@ -129,6 +130,21 @@ Status OSRM::Tile(const engine::api::TileParameters &params, std::string &str_re
 Status OSRM::Tile(const engine::api::TileParameters &params, engine::api::ResultT &result) const
 {
     return engine_->Tile(params, result);
+}
+
+Status OSRM::RouteInspection(const engine::api::RouteInspectionParameters &params,
+                             json::Object &json_result) const
+{
+    osrm::engine::api::ResultT result = json::Object();
+    auto status = engine_->RouteInspection(params, result);
+    json_result = std::move(std::get<json::Object>(result));
+    return status;
+}
+
+engine::Status OSRM::RouteInspection(const engine::api::RouteInspectionParameters &params,
+                                     engine::api::ResultT &result) const
+{
+    return engine_->RouteInspection(params, result);
 }
 
 } // namespace osrm

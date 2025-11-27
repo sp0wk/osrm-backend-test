@@ -3,6 +3,7 @@
 
 #include "engine/api/match_parameters.hpp"
 #include "engine/api/nearest_parameters.hpp"
+#include "engine/api/route_inspection_parameters.hpp"
 #include "engine/api/route_parameters.hpp"
 #include "engine/api/table_parameters.hpp"
 #include "engine/api/tile_parameters.hpp"
@@ -11,6 +12,7 @@
 #include "engine/engine_config.hpp"
 #include "engine/plugins/match.hpp"
 #include "engine/plugins/nearest.hpp"
+#include "engine/plugins/route_inspection.hpp"
 #include "engine/plugins/table.hpp"
 #include "engine/plugins/tile.hpp"
 #include "engine/plugins/trip.hpp"
@@ -36,6 +38,8 @@ class EngineInterface
     virtual Status Trip(const api::TripParameters &parameters, api::ResultT &result) const = 0;
     virtual Status Match(const api::MatchParameters &parameters, api::ResultT &result) const = 0;
     virtual Status Tile(const api::TileParameters &parameters, api::ResultT &result) const = 0;
+    virtual Status RouteInspection(const api::RouteInspectionParameters &parameters,
+                                   api::ResultT &result) const = 0;
 };
 
 template <typename Algorithm> class Engine final : public EngineInterface
@@ -51,7 +55,10 @@ template <typename Algorithm> class Engine final : public EngineInterface
           match_plugin(config.max_locations_map_matching,
                        config.max_radius_map_matching,
                        config.default_radius), //
-          tile_plugin()                        //
+          tile_plugin(),                       //
+          route_inspection_plugin(config.max_ri_polygon_points,
+                                  config.max_ri_polygon_area_km_sqr,
+                                  config.default_radius) //
 
     {
         if (config.use_shared_memory)
@@ -116,10 +123,24 @@ template <typename Algorithm> class Engine final : public EngineInterface
         return tile_plugin.HandleRequest(GetAlgorithms(params), params, result);
     }
 
+    Status RouteInspection(const api::RouteInspectionParameters &params,
+                           api::ResultT &result) const override final
+    {
+        // TODO find a cleaner way to pass facade
+        const auto facade = GetFacade(params);
+        RoutingAlgorithms<Algorithm> algorithms{heaps, facade};
+        return route_inspection_plugin.HandleRequest<Algorithm>(
+            *facade, algorithms, params, result);
+    }
+
   private:
     template <typename ParametersT> auto GetAlgorithms(const ParametersT &params) const
     {
         return RoutingAlgorithms<Algorithm>{heaps, facade_provider->Get(params)};
+    }
+    template <typename ParametersT> auto GetFacade(const ParametersT &params) const
+    {
+        return facade_provider->Get(params);
     }
     std::unique_ptr<DataFacadeProvider<Algorithm>> facade_provider;
     mutable SearchEngineData<Algorithm> heaps;
@@ -130,6 +151,7 @@ template <typename Algorithm> class Engine final : public EngineInterface
     const plugins::TripPlugin trip_plugin;
     const plugins::MatchPlugin match_plugin;
     const plugins::TilePlugin tile_plugin;
+    const plugins::RouteInspectionPlugin route_inspection_plugin;
 };
 } // namespace osrm::engine
 

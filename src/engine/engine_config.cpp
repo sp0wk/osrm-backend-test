@@ -16,6 +16,8 @@ bool EngineConfig::IsValid() const
                               unlimited_or_more_than(max_locations_map_matching, 2) &&
                               unlimited_or_more_than(max_radius_map_matching, 0) &&
                               unlimited_or_more_than(max_locations_trip, 2) &&
+                              unlimited_or_more_than(max_ri_polygon_points, 3) &&
+                              unlimited_or_more_than(max_ri_polygon_area_km_sqr, 0) &&
                               unlimited_or_more_than(max_locations_viaroute, 2) &&
                               unlimited_or_more_than(max_results_nearest, 0) &&
                               unlimited_or_more_than(default_radius, 0) && max_alternatives >= 0;

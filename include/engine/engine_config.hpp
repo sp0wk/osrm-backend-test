@@ -80,6 +80,8 @@ struct EngineConfig final
     int max_results_nearest = -1;
     double default_radius = -1.0;
     int max_alternatives = 3; // set an arbitrary upper bound; can be adjusted by user
+    int max_ri_polygon_points = -1;
+    int max_ri_polygon_area_km_sqr = -1;
     bool use_shared_memory = true;
     std::filesystem::path memory_file;
     bool use_mmap = true;

@@ -25,36 +25,41 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 */
 
-#ifndef OSRM_FWD_HPP
-#define OSRM_FWD_HPP
+#ifndef ENGINE_API_ROUTE_INSPECTION_PARAMETERS_HPP
+#define ENGINE_API_ROUTE_INSPECTION_PARAMETERS_HPP
 
-// OSRM API forward declarations for usage in interfaces. Exposes forward declarations for:
-// osrm::util::json::Object, osrm::engine::api::XParameters
+#include "engine/api/route_parameters.hpp"
 
-namespace osrm
+#include "util/coordinate.hpp"
+
+#include <vector>
+
+namespace osrm::engine::api
 {
 
-namespace util::json
+/**
+ * Parameters specific to the OSRM RouteInspection service.
+ *
+ * \see OSRM, Coordinate, Hint, Bearing, RouteParame, RouteParameters, TableParameters,
+ *      NearestParameters, TripParameters, MatchParameters, TileParameters and
+ *      RouteInspectionParameters
+ */
+struct RouteInspectionParameters : public RouteParameters
 {
-struct Object;
-} // namespace util::json
+    using Polygon = std::vector<util::Coordinate>;
 
-namespace engine
-{
-namespace api
-{
-struct RouteParameters;
-struct TableParameters;
-struct NearestParameters;
-struct TripParameters;
-struct MatchParameters;
-struct TileParameters;
-struct RouteInspectionParameters;
-} // namespace api
+    RouteInspectionParameters() = default;
 
-class EngineInterface;
-struct EngineConfig;
-} // namespace engine
-} // namespace osrm
+    template <typename P, typename... Args>
+    RouteInspectionParameters(P &&polygon_, Args &&...args_)
+        : RouteParameters{std::forward<Args>(args_)...}, polygon{std::forward<P>(polygon_)}
+    {
+    }
+
+    Polygon polygon;
+
+    bool IsValid() const { return RouteParameters::IsValid(); }
+};
+} // namespace osrm::engine::api
 
 #endif

@@ -2,6 +2,7 @@
 
 #include "server/api/match_parameter_grammar.hpp"
 #include "server/api/nearest_parameter_grammar.hpp"
+#include "server/api/route_inspection_parameter_grammar.hpp"
 #include "server/api/route_parameters_grammar.hpp"
 #include "server/api/table_parameter_grammar.hpp"
 #include "server/api/tile_parameter_grammar.hpp"
@@ -22,7 +23,8 @@ using is_grammar_t =
                                std::is_same<NearestParametersGrammar<>, T>::value ||
                                std::is_same<TripParametersGrammar<>, T>::value ||
                                std::is_same<MatchParametersGrammar<>, T>::value ||
-                               std::is_same<TileParametersGrammar<>, T>::value>;
+                               std::is_same<TileParametersGrammar<>, T>::value ||
+                               std::is_same<RouteInspectionParametersGrammar<>, T>::value>;
 
 template <typename ParameterT,
           typename GrammarT,
@@ -104,6 +106,14 @@ std::optional<engine::api::TileParameters> parseParameters(std::string::iterator
                                                            const std::string::iterator end)
 {
     return detail::parseParameters<engine::api::TileParameters, TileParametersGrammar<>>(iter, end);
+}
+
+template <>
+std::optional<engine::api::RouteInspectionParameters>
+parseParameters(std::string::iterator &iter, const std::string::iterator end)
+{
+    return detail::parseParameters<engine::api::RouteInspectionParameters,
+                                   RouteParametersGrammar<>>(iter, end);
 }
 
 } // namespace osrm::server::api

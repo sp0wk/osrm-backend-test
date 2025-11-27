@@ -56,7 +56,8 @@ namespace osrm::engine::api
  *                its opposite
  *
  * \see OSRM, Coordinate, Hint, Bearing, RouteParameters, TableParameters,
- *      NearestParameters, TripParameters, MatchParameters and TileParameters
+ *      NearestParameters, TripParameters, MatchParameters, TileParameters and
+ *      RouteInspectionParameters
  */
 struct BaseParameters
 {

@@ -3,20 +3,15 @@
 
 #include "engine/datafacade.hpp"
 #include "engine/route_inspection/input_graph_adaptors.hpp"
+
 #include "util/coordinate.hpp"
-#include "util/exception.hpp"
 #include "util/log.hpp"
+#include "util/polygon.hpp"
 #include "util/typedefs.hpp"
 
 #include <boost/concept/assert.hpp>
-#include <boost/geometry.hpp>
-#include <boost/geometry/geometries/point_xy.hpp>
-#include <boost/geometry/geometries/polygon.hpp>
 #include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/dijkstra_shortest_paths.hpp>
-#include <boost/graph/filtered_graph.hpp>
-#include <boost/graph/graph_concepts.hpp>
 #include <boost/graph/reverse_graph.hpp>
 #include <boost/graph/strong_components.hpp>
 #include <boost/graph/successive_shortest_path_nonnegative_weights.hpp>
@@ -227,7 +222,7 @@ void shortestPaths(const Graph &g,
 }
 
 // Extracts shortest paths from s to t using result of shortestPaths()
-Path extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
+inline Path extractPath(const std::vector<Vertex> &preds, const Vertex s, const Vertex t)
 {
     Path result;
     // initially reserve x2 of nodes between s and t
@@ -888,7 +883,7 @@ inline auto collectCostlyEdges(RiGraph &g)
 }
 
 // Optimize RiGraph connectivity to minimize the number of transition edges
-void optimizeRiGraph(RiGraph &g)
+inline void optimizeRiGraph(RiGraph &g)
 {
     using namespace boost;
 
@@ -961,47 +956,6 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
 // Polygon restriction utils
 //-------------------------------------------------------------------------------------------------
 
-namespace bg = boost::geometry;
-
-using Point = bg::model::d2::point_xy<decltype(util::Coordinate::lon)::value_type>;
-using Polygon = bg::model::polygon<Point>;
-
-// Converts util::Coordinate to Point
-inline Point toPoint(const util::Coordinate c) noexcept
-{
-    return Point{c.lon.__value, c.lat.__value};
-}
-
-// Creates a Polygon from a list of points
-inline Polygon createPolygon(const std::vector<util::Coordinate> &points,
-                             const double areaLimit = 0)
-{
-    BOOST_ASSERT(points.size() > 2 && points.front() == points.back());
-
-    Polygon polygon;
-    for (auto p : points)
-    {
-        bg::append(polygon, toPoint(p));
-    }
-
-    if (areaLimit > 0)
-    {
-        // TODO: consider using util::computeArea
-        if (auto a = bg::area(polygon); a > areaLimit)
-        {
-            throw util::exception{"Polygon area is too big: " + std::to_string(a)};
-        }
-    }
-
-    return polygon;
-}
-
-// Returns true if coordinate is inside a polygon (polygon edges count as "outside")
-inline bool isInsidePolygon(const Polygon &polygon, const Point point)
-{
-    return bg::within(point, polygon);
-}
-
 template <typename DataFacade>
 util::Coordinate getNodeEndpoint(const DataFacade &facade, const NodeID u)
 {
@@ -1010,14 +964,14 @@ util::Coordinate getNodeEndpoint(const DataFacade &facade, const NodeID u)
     {
         auto geom = facade.GetUncompressedForwardGeometry(gi.id);
         BOOST_ASSERT(!geom.empty());
-        auto endNode = *std::crbegin(geom);
+        auto endNode = geom.back();
         return facade.GetCoordinateOfNode(endNode);
     }
     else
     {
         auto geom = facade.GetUncompressedReverseGeometry(gi.id);
         BOOST_ASSERT(!geom.empty());
-        auto endNode = *std::crbegin(geom);
+        auto endNode = geom.back();
         return facade.GetCoordinateOfNode(endNode);
     }
 }
@@ -1027,12 +981,12 @@ template <typename DataFacade> struct PolygonFilter
 {
     bool operator()(const EdgeID &e) const
     {
-        auto p = getNodeEndpoint(facade, facade.GetTarget(e));
-        return isInsidePolygon(*polygon, Point{p});
+        const auto p = getNodeEndpoint(facade, facade.GetTarget(e));
+        return polygon.Contains(p);
     }
 
     const DataFacade &facade;
-    const Polygon *polygon{nullptr};
+    const util::Polygon &polygon;
 };
 
 } // namespace detail
@@ -1044,7 +998,7 @@ template <typename DataFacade> struct PolygonFilter
  * @param path resulting closed path
  * @return std::vector<NodeID> final route result
  */
-std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const detail::Path &path)
+inline std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const detail::Path &path)
 {
     if (path.empty())
     {
@@ -1082,49 +1036,32 @@ std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const detail::Pa
  * @tparam Algorithm routing algorithm type
  * @param facade Algorithm-specific DataFacade representing input graph
  * @param start PhantomNode matching start location
- * @param polygonPoints list of polygon points limiting route inspection area
+ * @param polygon polygon limiting route inspection area
  * @return std::vector<NodeID> resulting closed path as a list of node IDs (empty if not found)
  */
 template <typename Algorithm>
 std::vector<NodeID> routeInspection(const DataFacade<Algorithm> &facade,
                                     const PhantomNode &start,
-                                    const std::vector<util::Coordinate> &polygonPoints = {})
+                                    const util::Polygon &polygon)
 {
     using namespace util;
     using namespace detail;
 
     using BaseGraph = AlgorithmBasedInputGraphWrapper<Algorithm>;
 
-    static constexpr double MAX_POLYGON_AREA = 0;
+    BOOST_ASSERT(polygon.empty() || polygon.Contains(start.input_location));
 
-    // verify input
+    // TODO better selection
     const NodeID s =
         start.IsValidForwardSource() ? start.forward_segment_id.id : start.reverse_segment_id.id;
-    std::optional<Polygon> polygon;
-    if (!polygonPoints.empty())
-    {
-        try
-        {
-            polygon = createPolygon(polygonPoints, MAX_POLYGON_AREA);
-            if (!isInsidePolygon(*polygon, toPoint(start.location)))
-            {
-                throw exception{"Start point should be inside the polygon"};
-            }
-        }
-        catch (const util::exception &e)
-        {
-            Log(logDEBUG) << "Input polygon is rejected: " << e.what();
-            return {};
-        }
-    }
 
     // prepare graph data
     BaseGraph baseGraph{facade};
     RiGraph rig;
 
-    if (polygon)
+    if (!polygon.empty())
     {
-        const PolygonFilter f{&polygon.value()};
+        const PolygonFilter f{facade, polygon};
         rig = buildRiGraph(baseGraph, s, f);
     }
     else
