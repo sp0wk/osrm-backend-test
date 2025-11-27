@@ -4,6 +4,8 @@
 #include "engine/datafacade.hpp"
 #include "engine/datafacade/algorithm_datafacade.hpp"
 
+#include "engine/routing_algorithms/routing_base_ch.hpp"
+
 #include "util/alias.hpp"
 #include "util/typedefs.hpp"
 
@@ -12,6 +14,7 @@
 #include <boost/range/concepts.hpp>
 
 #include <type_traits>
+#include <unordered_set>
 
 namespace osrm::engine::route_inspection
 {
@@ -23,7 +26,7 @@ template <typename G> struct InputGraphConcept
         // Get range over all outgoing directed edges of a node
         auto edges = g.GetOutEdgeRange(edge_based_node_id);
         BOOST_CONCEPT_ASSERT((boost::ForwardRangeConcept<decltype(edges)>));
-        static_assert(std::is_same_v<decltype(*edges.begin()), EdgeID>);
+        static_assert(std::is_same_v<std::decay_t<decltype(*edges.begin())>, EdgeID>);
 
         // Get full edge weight (EBG node weight + turn penalty)
         edge_weight = g.GetEdgeWeight(edge_based_node_id, edge_based_edge_id);
@@ -43,6 +46,69 @@ template <typename G> struct InputGraphConcept
 
 // Generic template for input graphs for various routing algorithms
 template <typename AlgorithmT> class AlgorithmBasedInputGraphWrapper;
+
+//-------------------------------------------------------------------------------------------------
+
+// Input graph wrapper for CH's edge-based graph exposed via DataFacade
+template <> class AlgorithmBasedInputGraphWrapper<datafacade::CH>
+{
+  public:
+    using Graph = DataFacade<datafacade::CH>;
+
+    explicit AlgorithmBasedInputGraphWrapper(const Graph &facade) : facade{facade} {}
+
+    const Graph &GetSourceGraph() const noexcept { return facade; }
+
+    // Interface implementation
+
+    // ATTENTION: By design CH doesn't support fast lookup of original edges, so edges are
+    // dynamically unpacked on the fly which is rather slow.
+    auto GetOutEdgeRange(const NodeID v) const
+    {
+        // to dedup same edges from different shortcuts
+        const auto nbOfEdges = facade.GetOutDegree(v);
+        std::vector<EdgeID> outEdges;
+        outEdges.reserve(nbOfEdges);
+        std::unordered_set<NodeID> visitedNodes;
+        visitedNodes.reserve(nbOfEdges);
+
+        for (const auto e : facade.GetAdjacentEdgeRange(v))
+        {
+            // only out edges
+            if (!facade.GetEdgeData(e).forward)
+            {
+                continue;
+            }
+
+            // extract first original edge from the shortcut
+            std::vector<NodeID> unpackedEdge;
+            routing_algorithms::ch::unpackEdge(facade, v, facade.GetTarget(e), unpackedEdge);
+            BOOST_ASSERT(unpackedEdge.size() >= 2 && unpackedEdge.front() == v);
+            auto origEdge = facade.FindSmallestEdge(
+                unpackedEdge[0], unpackedEdge[1], [](const auto &data) { return data.forward; });
+            BOOST_ASSERT(origEdge != SPECIAL_EDGEID);
+
+            // check for uniqueness
+            if (auto u = facade.GetTarget(origEdge); !visitedNodes.contains(u))
+            {
+                outEdges.emplace_back(origEdge);
+                visitedNodes.emplace(u);
+            }
+        }
+
+        return outEdges;
+    }
+
+    EdgeWeight GetEdgeWeight(const NodeID, const EdgeID e) const
+    {
+        return facade.GetEdgeData(e).weight;
+    }
+
+    NodeID GetTarget(const EdgeID e) const { return facade.GetTarget(e); }
+
+  private:
+    const Graph &facade;
+};
 
 //-------------------------------------------------------------------------------------------------
 
