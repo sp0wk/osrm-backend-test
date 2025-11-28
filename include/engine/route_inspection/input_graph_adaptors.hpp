@@ -3,10 +3,12 @@
 
 #include "engine/datafacade.hpp"
 #include "engine/datafacade/algorithm_datafacade.hpp"
+#include "engine/datafacade/datafacade_base.hpp"
 
 #include "engine/routing_algorithms/routing_base_ch.hpp"
 
 #include "util/alias.hpp"
+#include "util/exception.hpp"
 #include "util/typedefs.hpp"
 
 #include <boost/concept/assert.hpp>
@@ -23,6 +25,9 @@ template <typename G> struct InputGraphConcept
 {
     BOOST_CONCEPT_USAGE(InputGraphConcept)
     {
+        // Get base datafacade
+        f = &g.GetFacade();
+
         // Get range over all outgoing directed edges of a node
         auto edges = g.GetOutEdgeRange(edge_based_node_id);
         BOOST_CONCEPT_ASSERT((boost::ForwardRangeConcept<decltype(edges)>));
@@ -36,7 +41,8 @@ template <typename G> struct InputGraphConcept
     }
 
   private:
-    G g;
+    const G g;
+    const datafacade::BaseDataFacade *f;
     NodeID edge_based_node_id;
     EdgeID edge_based_edge_id;
     EdgeWeight edge_weight;
@@ -49,62 +55,24 @@ template <typename AlgorithmT> class AlgorithmBasedInputGraphWrapper;
 
 //-------------------------------------------------------------------------------------------------
 
-// Input graph wrapper for CH's edge-based graph exposed via DataFacade
+// Dummy input graph wrapper for CH's edge-based graph exposed via DataFacade
+// It should never be actually used at runtime
 template <> class AlgorithmBasedInputGraphWrapper<datafacade::CH>
 {
   public:
     using Graph = DataFacade<datafacade::CH>;
 
-    explicit AlgorithmBasedInputGraphWrapper(const Graph &facade) : facade{facade} {}
-
-    const Graph &GetSourceGraph() const noexcept { return facade; }
-
-    // Interface implementation
-
-    // ATTENTION: By design CH doesn't support fast lookup of original edges, so edges are
-    // dynamically unpacked on the fly which is rather slow.
-    auto GetOutEdgeRange(const NodeID v) const
+    explicit AlgorithmBasedInputGraphWrapper(const Graph &facade) : facade{facade}
     {
-        // to dedup same edges from different shortcuts
-        const auto nbOfEdges = facade.GetOutDegree(v);
-        std::vector<EdgeID> outEdges;
-        outEdges.reserve(nbOfEdges);
-        std::unordered_set<NodeID> visitedNodes;
-        visitedNodes.reserve(nbOfEdges);
-
-        for (const auto e : facade.GetAdjacentEdgeRange(v))
-        {
-            // only out edges
-            if (!facade.GetEdgeData(e).forward)
-            {
-                continue;
-            }
-
-            // extract first original edge from the shortcut
-            std::vector<NodeID> unpackedEdge;
-            routing_algorithms::ch::unpackEdge(facade, v, facade.GetTarget(e), unpackedEdge);
-            BOOST_ASSERT(unpackedEdge.size() >= 2 && unpackedEdge.front() == v);
-            auto origEdge = facade.FindSmallestEdge(
-                unpackedEdge[0], unpackedEdge[1], [](const auto &data) { return data.forward; });
-            BOOST_ASSERT(origEdge != SPECIAL_EDGEID);
-
-            // check for uniqueness
-            if (auto u = facade.GetTarget(origEdge); !visitedNodes.contains(u))
-            {
-                outEdges.emplace_back(origEdge);
-                visitedNodes.emplace(u);
-            }
-        }
-
-        return outEdges;
+        throw util::exception{"Route inspection on CH graph is not supported"};
     }
 
-    EdgeWeight GetEdgeWeight(const NodeID, const EdgeID e) const
-    {
-        return facade.GetEdgeData(e).weight;
-    }
+    const Graph &GetFacade() const noexcept { return facade; }
 
-    NodeID GetTarget(const EdgeID e) const { return facade.GetTarget(e); }
+    // Fake interface implementation
+    std::vector<EdgeID> GetOutEdgeRange(const NodeID) const { return {}; }
+    EdgeWeight GetEdgeWeight(const NodeID, const EdgeID) const { return INVALID_EDGE_WEIGHT; }
+    NodeID GetTarget(const EdgeID) const { return SPECIAL_NODEID; }
 
   private:
     const Graph &facade;
@@ -120,27 +88,35 @@ template <> class AlgorithmBasedInputGraphWrapper<datafacade::MLD>
 
     explicit AlgorithmBasedInputGraphWrapper(const Graph &facade) : facade{facade} {}
 
-    const Graph &GetSourceGraph() const noexcept { return facade; }
+    const Graph &GetFacade() const noexcept { return facade; }
 
     // Interface implementation
 
     auto GetOutEdgeRange(const NodeID v) const
     {
-        // on 0 level same as GetAdjacentEdgeRange
-        const auto edges = facade.GetBorderEdgeRange(0, v);
+        BOOST_ASSERT(v != SPECIAL_NODEID);
+        const auto edges = facade.GetAdjacentEdgeRange(v);
         return boost::adaptors::filter(edges,
                                        [this](const auto e) { return facade.IsForwardEdge(e); });
     }
 
     EdgeWeight GetEdgeWeight(const NodeID v, const EdgeID e) const
     {
+        BOOST_ASSERT(v != SPECIAL_NODEID && e != SPECIAL_EDGEID);
         const auto &edge_data = facade.GetEdgeData(e);
         EdgeWeight w = facade.GetNodeWeight(v);
-        const auto turn_penalty = facade.GetWeightPenaltyForEdgeID(edge_data.turn_id);
-        return w + alias_cast<EdgeWeight>(turn_penalty);
+        BOOST_ASSERT(w != INVALID_EDGE_WEIGHT);
+        const auto turn_penalty =
+            alias_cast<EdgeWeight>(facade.GetWeightPenaltyForEdgeID(edge_data.turn_id));
+        BOOST_ASSERT(turn_penalty != INVALID_EDGE_WEIGHT);
+        return w + turn_penalty;
     }
 
-    NodeID GetTarget(const EdgeID e) const { return facade.GetTarget(e); }
+    NodeID GetTarget(const EdgeID e) const
+    {
+        BOOST_ASSERT(e != SPECIAL_EDGEID);
+        return facade.GetTarget(e);
+    }
 
   private:
     const Graph &facade;

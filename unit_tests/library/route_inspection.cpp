@@ -3,8 +3,22 @@
 #include "engine/route_inspection/input_graph_adaptors.hpp"
 #include "engine/route_inspection/route_inspection.hpp"
 
+#include "osrm/route_inspection_parameters.hpp"
+#include <engine/api/flatbuffers/fbresult_generated.h>
+
+#include "osrm/coordinate.hpp"
+#include "osrm/json_container.hpp"
+#include "osrm/osrm.hpp"
+#include "osrm/status.hpp"
+
 #include "util/node_based_graph.hpp"
+#include "util/rectangle.hpp"
 #include "util/typedefs.hpp"
+
+#include "mocks/mock_datafacade.hpp"
+
+#include "coordinates.hpp"
+#include "fixture.hpp"
 
 #include <boost/graph/graph_traits.hpp>
 
@@ -24,7 +38,11 @@ class MockInputGraphWrapper
 
     explicit MockInputGraphWrapper(const Graph &g) : g{g} {}
 
-    const Graph &GetSourceGraph() const noexcept { return g; }
+    const auto &GetFacade() const noexcept
+    {
+        static const osrm::test::MockBaseDataFacade f;
+        return f;
+    }
 
     // Interface implementation
 
@@ -98,8 +116,8 @@ template <typename G, typename V> void testNoEdge(const G &g, V u, V v)
 BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
 {
     // Nodes are EBG nodes
-    // 0 --> 1 --> 2 --> 3
-    //       ↑__________/
+    // 0 <--> 1 --> 2 --> 3 --> 4
+    //        ↑__________/
 
     NodeBasedDynamicGraph g;
 
@@ -108,16 +126,20 @@ BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
     auto v1 = g.InsertNode();
     auto v2 = g.InsertNode();
     auto v3 = g.InsertNode();
+    auto v4 = g.InsertNode();
     g.InsertEdge(v0, v1, w);
-    // no v1->v0 edge
+    g.InsertEdge(v1, v0, w);
     g.InsertEdge(v1, v2, w);
     g.InsertEdge(v2, v3, w);
     g.InsertEdge(v3, v1, w);
+    g.InsertEdge(v3, v4, w);
+    // no v4->v3 edge
 
     MockInputGraphWrapper ig{g};
     auto rig = rid::buildRiGraph(ig, v0);
 
-    BOOST_TEST(!rid::isStronglyConnectedGraph(rig));
+    // 3->4 deadend was removed
+    BOOST_TEST(rid::isStronglyConnectedGraph(rig));
 }
 
 BOOST_AUTO_TEST_CASE(test_shortest_path)
@@ -924,6 +946,86 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_optimal_cost)
     BOOST_TEST(path[8] == 7);
     BOOST_TEST(path[9] == 9);
     BOOST_TEST(path[10] == 0);
+}
+
+//-------------------------------------------------------------------------------------------------
+// Integration tests
+//-------------------------------------------------------------------------------------------------
+
+// sends RI request
+osrm::Status run_route_inspection_json(const osrm::OSRM &osrm,
+                                       const osrm::RouteInspectionParameters &params,
+                                       osrm::json::Object &json_result,
+                                       bool use_json_only_api)
+{
+    if (use_json_only_api)
+    {
+        return osrm.RouteInspection(params, json_result);
+    }
+    osrm::engine::api::ResultT result = osrm::json::Object();
+    auto rc = osrm.RouteInspection(params, result);
+    json_result = std::get<osrm::json::Object>(result);
+    return rc;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+void test_ri_response_for_simple_search(bool use_json_only_api)
+{
+    using namespace osrm;
+
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/mld/monaco.osrm", osrm::EngineConfig::Algorithm::MLD);
+    const auto location = get_dummy_location();
+
+    RouteInspectionParameters params;
+    params.coordinates.push_back(location);
+    params.coordinates.push_back(location);
+
+    // polygon from bounding box
+    const util::RectangleInt2D bb = util::RectangleInt2D::ExpandMeters(location, 500);
+    params.polygon.push_back(util::Coordinate{bb.min_lon, bb.min_lat});
+    params.polygon.push_back(util::Coordinate{bb.min_lon, bb.max_lat});
+    params.polygon.push_back(util::Coordinate{bb.max_lon, bb.max_lat});
+    params.polygon.push_back(util::Coordinate{bb.max_lon, bb.min_lat});
+    params.polygon.push_back(params.polygon.front());
+
+    json::Object json_result;
+    const auto rc = run_route_inspection_json(osrm, params, json_result, use_json_only_api);
+    BOOST_CHECK(rc == Status::Ok);
+
+    const auto code = std::get<json::String>(json_result.values.at("code")).value;
+    BOOST_CHECK_EQUAL(code, "Ok");
+
+    const auto &waypoints = std::get<json::Array>(json_result.values.at("waypoints")).values;
+    BOOST_CHECK(waypoints.size() >= 2);
+
+    auto const getWaypointCoord = [](const auto &waypoint)
+    {
+        const auto &waypoint_object = std::get<json::Object>(waypoint);
+        const auto location = std::get<json::Array>(waypoint_object.values.at("location")).values;
+        const auto longitude = std::get<json::Number>(location[0]).value;
+        const auto latitude = std::get<json::Number>(location[1]).value;
+        return util::FloatCoordinate{util::FloatLongitude{longitude},
+                                     util::FloatLatitude{latitude}};
+    };
+
+    const auto firstWp = getWaypointCoord(waypoints.front());
+    const auto lastWp = getWaypointCoord(waypoints.back());
+    BOOST_TEST((firstWp == lastWp));
+
+    for (const auto &waypoint : waypoints)
+    {
+        const auto wp = getWaypointCoord(waypoint);
+        BOOST_TEST(wp.IsValid());
+    }
+}
+BOOST_AUTO_TEST_CASE(test_ri_response_for_simple_search_old_api)
+{
+    test_ri_response_for_simple_search(true);
+}
+BOOST_AUTO_TEST_CASE(test_ri_response_for_simple_search_new_api)
+{
+    test_ri_response_for_simple_search(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

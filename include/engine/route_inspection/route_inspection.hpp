@@ -109,19 +109,66 @@ struct EdgeFlow
 using MinCostFlow = std::vector<EdgeFlow>;
 
 //-------------------------------------------------------------------------------------------------
-// Eulerian circuit
+// Graph connectivity utils
 //-------------------------------------------------------------------------------------------------
 
 // Checks whether directed graph is strongly connected
 inline bool isStronglyConnectedGraph(const RiGraph &g)
 {
     using namespace boost;
-    // TODO consider using TarjanSCC from osrm::util instead
     std::vector<int> component(num_vertices(g));
     auto num =
         strong_components(g, make_iterator_property_map(component.begin(), get(vertex_index, g)));
     return num == 1;
 }
+
+// RiGraph correctness verification
+inline bool isValidGraph(const RiGraph &g)
+{
+    return num_vertices(g) >= 2 && num_edges(g) >= 2 && isStronglyConnectedGraph(g);
+}
+
+// Cut out RiGraph's vertices/edges which belong to minor SCCs and leave only 1 SCC (to ensure
+// strongly connected graph)
+inline void dropMinorSCCs(RiGraph &g)
+{
+    using namespace boost;
+
+    std::vector<int> sccs(num_vertices(g));
+    auto num = strong_components(g, make_iterator_property_map(sccs.begin(), get(vertex_index, g)));
+
+    // find largest scc
+    std::vector<int> counts(num, 0);
+    for (const auto scc : sccs)
+    {
+        ++counts[scc];
+    }
+    int largestSCC =
+        std::distance(counts.cbegin(), std::max_element(counts.cbegin(), counts.cend()));
+
+    // remove minor sccs vertices
+    std::vector<Vertex> toRemove;
+    toRemove.reserve(sccs.size() - counts[largestSCC]);
+    // iterate in reverse to remove vertices in decreasing order ()
+    for (const auto v : adaptors::reverse(util::irange<std::size_t>(0, sccs.size())))
+    {
+        if (sccs[v] != largestSCC)
+        {
+            toRemove.emplace_back(static_cast<Vertex>(v));
+        }
+    }
+
+    // remove vertices (and consequently edges)
+    for (const auto v : toRemove)
+    {
+        clear_vertex(v, g);
+        remove_vertex(v, g);
+    }
+}
+
+//-------------------------------------------------------------------------------------------------
+// Eulerian circuit
+//-------------------------------------------------------------------------------------------------
 
 // Collects edge degree delta for all nodes in the graph
 inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const RiGraph &g)
@@ -641,6 +688,7 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
 
             auto v = g.GetTarget(e);
             auto w = g.GetEdgeWeight(u, e);
+            BOOST_ASSERT(u != v && w != INVALID_EDGE_WEIGHT);
 
             if (!vmap.contains(v))
             {
@@ -659,6 +707,9 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
             }
         }
     }
+
+    // ensure single SCC
+    dropMinorSCCs(out);
 
     return out;
 }
@@ -894,6 +945,8 @@ inline void optimizeRiGraph(RiGraph &g)
         remove_edge(e, g);
     }
 
+    BOOST_ASSERT(isValidGraph(g));
+
     // 2) Collect optimal edges
     Vertex start{0};
     auto usedEdges = collectMinCostEdgeSet(g, start);
@@ -1070,12 +1123,18 @@ std::vector<NodeID> routeInspection(const DataFacade<Algorithm> &facade,
         rig = buildRiGraph(baseGraph, s);
     }
 
+    if (!isValidGraph(rig))
+    {
+        Log(logERROR) << "Constructed RiGraph is invalid";
+        return {};
+    }
+
+    // Optimize RiGraph structure for correct and efficient route inspection
     optimizeRiGraph(rig);
 
-    // verify resulting graph is strongly connected
-    if (!isStronglyConnectedGraph(rig))
+    if (!isValidGraph(rig))
     {
-        Log(logDEBUG) << "Resulting RiGraph is not strongly connected";
+        Log(logERROR) << "Optimized RiGraph is invalid";
         return {};
     }
 

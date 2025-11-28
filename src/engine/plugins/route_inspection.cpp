@@ -6,6 +6,7 @@
 #include "engine/route_inspection/route_inspection.hpp"
 
 #include "util/coordinate_calculation.hpp"
+#include "util/integer_range.hpp"
 #include "util/polygon.hpp"
 
 #include <boost/assert.hpp>
@@ -53,36 +54,6 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     BOOST_ASSERT(parameters.IsValid());
 
-    // check input polygon
-    if (auto sz = parameters.polygon.size(); sz == 0)
-    {
-        return Error("TooBig", "Limiting polygon must be specified", result);
-    }
-    else if (sz > static_cast<size_t>(max_ri_polygon_points))
-    {
-        return Error("TooBig", "Limiting polygon has too many points", result);
-    }
-
-    if (!CheckAllCoordinates(parameters.polygon))
-    {
-        return Error("InvalidValue", "Invalid polygon point(s)", result);
-    }
-
-    if (auto area = util::coordinate_calculation::computeArea(parameters.polygon) / 1e6;
-        area > max_ri_polygon_area_km_sqr)
-    {
-        return Error(
-            "TooBig", "Limiting polygon is too big with area=" + std::to_string(area), result);
-    }
-
-    util::Polygon polygon{parameters.polygon};
-    if (!polygon.IsValid())
-    {
-        return Error("InvalidValue",
-                     "Resulting polygon is invalid with size=" + std::to_string(polygon.size()),
-                     result);
-    }
-
     // check start coordinate
     if (!CheckAllCoordinates(parameters.coordinates))
     {
@@ -94,9 +65,43 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
         return Error("InvalidValue", "Start and dest coordinate should be the same", result);
     }
 
+    // check input polygon
+    if (auto sz = parameters.polygon.size(); sz == 0)
+    {
+        return Error("TooBig", "Limiting polygon must be specified", result);
+    }
+    else if (max_ri_polygon_points > 0 && sz > static_cast<size_t>(max_ri_polygon_points))
+    {
+        return Error("TooBig", "Limiting polygon has too many points", result);
+    }
+
+    if (!CheckAllCoordinates(parameters.polygon))
+    {
+        return Error("InvalidValue", "Invalid polygon point(s)", result);
+    }
+
+    if (max_ri_polygon_area_km_sqr > 0)
+    {
+        if (auto area = util::coordinate_calculation::computeArea(parameters.polygon) / 1e6;
+            area > max_ri_polygon_area_km_sqr)
+        {
+            return Error(
+                "TooBig", "Limiting polygon is too big with area=" + std::to_string(area), result);
+        }
+    }
+
+    util::Polygon polygon{parameters.polygon};
+    if (!polygon.IsValid())
+    {
+        return Error("InvalidValue",
+                     "Resulting polygon is invalid with size=" + std::to_string(polygon.size()),
+                     result);
+    }
+
+    // trivial check for route feasibility
     if (!polygon.Contains(parameters.coordinates.front()))
     {
-        return Error("InvalidValue", "Starting location should be inside the polygon", result);
+        return Error("NoRoute", "Starting location should be inside the polygon", result);
     }
 
     // snap start coordinate to node
@@ -113,6 +118,38 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     const auto &startPhantom = snapped_phantoms.front().front();
     std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, startPhantom, polygon);
+    if (ri_path.size() < 3 || ri_path.front() != ri_path.back())
+    {
+        return Error("NoRoute", "Couldn't find a valid roundtrip route", result);
+    }
+
+    // TODO rework
+    {
+        auto lastPhantom = std::move(snapped_phantoms.back());
+        snapped_phantoms.pop_back();
+        for (const auto i : util::irange<std::size_t>(1UL, ri_path.size() - 1))
+        {
+            auto node = ri_path[i];
+            auto c = route_inspection::detail::getNodeEndpoint(facade, node);
+
+            const bool use_bearings = !parameters.bearings.empty();
+            const bool use_radiuses = !parameters.radiuses.empty();
+            const bool use_approaches = !parameters.approaches.empty();
+            auto p = facade.NearestPhantomNodes(
+                c,
+                1,
+                use_radiuses ? parameters.radiuses[i] : default_radius,
+                use_bearings ? parameters.bearings[i] : std::nullopt,
+                use_approaches && parameters.approaches[i] ? parameters.approaches[i].value()
+                                                           : engine::Approach::UNRESTRICTED);
+            if (p.empty())
+            {
+                return Error("NoRoute", "Couldn't snap route coordinates to roads", result);
+            }
+            snapped_phantoms.emplace_back(std::vector<PhantomNode>{p.front().phantom_node});
+        }
+        snapped_phantoms.emplace_back(lastPhantom);
+    }
 
     // get the route when visiting all nodes in optimized order
     InternalRouteResult route = ComputeRoute(algorithms, snapped_phantoms, ri_path);
