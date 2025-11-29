@@ -8,6 +8,7 @@
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/point_xy.hpp>
 #include <boost/geometry/geometries/polygon.hpp>
+#include <boost/iterator/transform_iterator.hpp>
 #include <boost/range/concepts.hpp>
 
 namespace osrm::util
@@ -24,18 +25,20 @@ struct Polygon
 
     template <typename CoordRange> explicit Polygon(const CoordRange &coords)
     {
-        BOOST_CONCEPT_ASSERT((boost::ForwardRangeConcept<CoordRange>));
-        for (const auto c : coords)
-        {
-            Append(c);
-        }
-    }
+        using namespace boost;
+        BOOST_CONCEPT_ASSERT((ForwardRangeConcept<CoordRange>));
 
-    // Appends new point to a polygon
-    void Append(const Coord c)
-    {
-        BOOST_ASSERT(c.IsValid());
-        boost::geometry::append(polygon, toPoint(c));
+        auto const convert = [this](const auto c)
+        {
+            BOOST_ASSERT(c.IsValid());
+            return toPoint(c);
+        };
+
+        auto begin = make_transform_iterator(std::cbegin(coords), convert);
+        auto end = make_transform_iterator(std::cend(coords), convert);
+
+        geometry::append(polygon, make_iterator_range(begin, end));
+        geometry::correct(polygon);
     }
 
     // Checks whether list of points resulted in a valid polygon
