@@ -770,6 +770,7 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     auto rig = makeRiGraph(g, v0);
     const auto path = runRouteInspection(rig, 0);
 
+    // TODO fux by removing unused shortcuts
     BOOST_REQUIRE(path.size() == 11);
     BOOST_TEST(path[0] == 0);
     BOOST_TEST(path[1] == 1);
@@ -968,6 +969,24 @@ osrm::Status run_route_inspection_json(const osrm::OSRM &osrm,
     return rc;
 }
 
+using Polygon = osrm::engine::api::RouteInspectionParameters::Polygon;
+
+Polygon makePolygon(const std::vector<std::pair<double, double>> &points)
+{
+    using namespace osrm::util;
+    Polygon polygon;
+    polygon.reserve(points.size() + 1);
+    for (const auto &point : points)
+    {
+        polygon.emplace_back(FloatLongitude{point.first}, FloatLatitude{point.second});
+    }
+    if (polygon.front() != polygon.back())
+    {
+        polygon.emplace_back(polygon.front());
+    }
+    return polygon;
+}
+
 //-------------------------------------------------------------------------------------------------
 
 void test_ri_response_for_simple_search(bool use_json_only_api)
@@ -975,19 +994,19 @@ void test_ri_response_for_simple_search(bool use_json_only_api)
     using namespace osrm;
 
     auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/mld/monaco.osrm", osrm::EngineConfig::Algorithm::MLD);
-    const auto location = get_dummy_location();
+    const auto location =
+        Location{util::FloatLongitude{7.434346008945369}, util::FloatLatitude{43.74749060149961}};
 
     RouteInspectionParameters params;
     params.coordinates.push_back(location);
     params.coordinates.push_back(location);
 
-    // polygon from bounding box
-    const util::RectangleInt2D bb = util::RectangleInt2D::ExpandMeters(location, 500);
-    params.polygon.push_back(util::Coordinate{bb.min_lon, bb.min_lat});
-    params.polygon.push_back(util::Coordinate{bb.min_lon, bb.max_lat});
-    params.polygon.push_back(util::Coordinate{bb.max_lon, bb.max_lat});
-    params.polygon.push_back(util::Coordinate{bb.max_lon, bb.min_lat});
-    params.polygon.push_back(params.polygon.front());
+    params.polygon = makePolygon({{7.430766291940898, 43.74481022468697},
+                                  {7.43360907004822, 43.74387679776672},
+                                  {7.4356746587683915, 43.7469213894843},
+                                  {7.434308316015745, 43.74828500179743},
+                                  {7.432749267418956, 43.7476471014152},
+                                  {7.430766291940898, 43.74481022468697}});
 
     json::Object json_result;
     const auto rc = run_route_inspection_json(osrm, params, json_result, use_json_only_api);
@@ -995,9 +1014,10 @@ void test_ri_response_for_simple_search(bool use_json_only_api)
 
     const auto code = std::get<json::String>(json_result.values.at("code")).value;
     BOOST_CHECK_EQUAL(code, "Ok");
+    BOOST_REQUIRE(code == "Ok");
 
     const auto &waypoints = std::get<json::Array>(json_result.values.at("waypoints")).values;
-    BOOST_CHECK(waypoints.size() >= 2);
+    BOOST_REQUIRE(waypoints.size() >= 2);
 
     auto const getWaypointCoord = [](const auto &waypoint)
     {

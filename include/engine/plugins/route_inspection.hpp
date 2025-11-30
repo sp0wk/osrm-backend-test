@@ -18,9 +18,9 @@ class RouteInspectionPlugin final : public BasePlugin
     const int max_ri_polygon_points;
     const int max_ri_polygon_area_km_sqr;
 
-    InternalRouteResult ComputeRoute(const RoutingAlgorithmsInterface &algorithms,
-                                     const std::vector<PhantomNodeCandidates> &waypoint_candidates,
-                                     const std::vector<NodeID> &ri_path) const;
+    InternalRouteResult
+    ComputeRoute(const RoutingAlgorithmsInterface &algorithms,
+                 const std::vector<PhantomNodeCandidates> &waypoint_candidates) const;
 
   public:
     explicit RouteInspectionPlugin(const int max_ri_polygon_points_,

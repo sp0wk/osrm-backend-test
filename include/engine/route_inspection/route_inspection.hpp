@@ -2,6 +2,7 @@
 #define OSRM_ROUTE_INSPECTION_HPP
 
 #include "engine/datafacade.hpp"
+#include "engine/datafacade/datafacade_base.hpp"
 #include "engine/route_inspection/input_graph_adaptors.hpp"
 
 #include "util/coordinate.hpp"
@@ -27,6 +28,7 @@
 #include <queue>
 #include <stack>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace osrm::engine::route_inspection
@@ -35,20 +37,108 @@ namespace osrm::engine::route_inspection
 namespace detail
 {
 
+// convenience function to get node's start/end coors
+inline auto getNodeEndpoints(const datafacade::BaseDataFacade &facade, const NodeID node)
+{
+    util::Coordinate c1, c2;
+    auto gi = facade.GetGeometryIndex(node);
+    if (gi.forward)
+    {
+        auto geom = facade.GetUncompressedForwardGeometry(gi.id);
+        BOOST_ASSERT(!geom.empty());
+        c1 = facade.GetCoordinateOfNode(geom.front());
+        c2 = facade.GetCoordinateOfNode(geom.back());
+    }
+    else
+    {
+        auto geom = facade.GetUncompressedReverseGeometry(gi.id);
+        BOOST_ASSERT(!geom.empty());
+        c1 = facade.GetCoordinateOfNode(geom.front());
+        c2 = facade.GetCoordinateOfNode(geom.back());
+    }
+
+    return std::make_pair(c1, c2);
+}
+
 //-------------------------------------------------------------------------------------------------
 // Common types
 //-------------------------------------------------------------------------------------------------
 
 // Main graph types (BGL based) used for route inspection implementation
-using RiGraph = boost::adjacency_list<
+using RiGraphBase = boost::adjacency_list<
     boost::vecS,
     boost::vecS,
     boost::bidirectionalS,
     boost::property<boost::vertex_name_t, NodeID>,
     boost::property<boost::edge_name_t, EdgeID, boost::property<boost::edge_weight_t, EdgeWeight>>>;
 
-using Vertex = boost::graph_traits<RiGraph>::vertex_descriptor;
-using Edge = boost::graph_traits<RiGraph>::edge_descriptor;
+using Vertex = boost::graph_traits<RiGraphBase>::vertex_descriptor;
+using Edge = boost::graph_traits<RiGraphBase>::edge_descriptor;
+
+class RiGraph : public RiGraphBase
+{
+  public:
+    explicit RiGraph(const datafacade::BaseDataFacade &facade) : RiGraphBase(), facade{&facade} {}
+
+    const datafacade::BaseDataFacade &GetFacade() const noexcept { return *facade; }
+
+    // TODO replace with actual GeoJSON
+
+    void logVertex(const Vertex u, std::string_view label = {}) const
+    {
+        const auto [c1, c2] = getVertexCoords(u);
+        auto node = get(boost::vertex_name, *this, u);
+        std::cout << label << " vertex " << u << " (" << node << "): [[" << c1.lon << "," << c1.lat
+                  << "],[" << c2.lon << "," << c2.lat << "]]," << std::endl;
+    }
+
+    void logVertexStart(const Vertex u, std::string_view label = {}) const
+    {
+        const auto [c, _] = getVertexCoords(u);
+        auto node = get(boost::vertex_name, *this, u);
+        std::cout << label << " vertex start " << u << " (" << node << "): [" << c.lon << ","
+                  << c.lat << "]" << std::endl;
+    }
+
+    void logVertexEnd(const Vertex u, std::string_view label = {}) const
+    {
+        const auto [_, c] = getVertexCoords(u);
+        auto node = get(boost::vertex_name, *this, u);
+        std::cout << label << " vertex end " << u << " (" << node << "): [" << c.lon << "," << c.lat
+                  << "]" << std::endl;
+    }
+
+    void logEdge(const Edge e, std::string_view label = {}) const
+    {
+        const auto u = source(e, *this);
+        const auto v = target(e, *this);
+        const auto [c1, c2] = getVertexCoords(u);
+        const auto [c3, c4] = getVertexCoords(v);
+        BOOST_ASSERT(c2 == c3);
+        const auto from = get(boost::vertex_name, *this, u);
+        const auto to = get(boost::vertex_name, *this, v);
+        std::cout << label << " edge " << u << " -> " << v << " (" << from << " -> " << to
+                  << "): [[" << c1.lon << "," << c1.lat << "],[" << c2.lon << "," << c2.lat << "],["
+                  << c3.lon << "," << c3.lat << "]]," << std::endl;
+    }
+
+    void logEdge(const Vertex u, const Vertex v, std::string_view label = {}) const
+    {
+        const auto [e, exists] = edge(u, v, *this);
+        BOOST_ASSERT(exists);
+        logEdge(e, label);
+    };
+
+  private:
+    std::pair<util::FloatCoordinate, util::FloatCoordinate> getVertexCoords(const Vertex u) const
+    {
+        auto node = get(boost::vertex_name, *this, u);
+        const auto [s, e] = getNodeEndpoints(GetFacade(), node);
+        return std::make_pair(util::FloatCoordinate{s}, util::FloatCoordinate{e});
+    }
+
+    const datafacade::BaseDataFacade *facade{nullptr};
+};
 
 // Graph edge hasher
 struct EdgeHash
@@ -161,6 +251,7 @@ inline void dropMinorSCCs(RiGraph &g)
     // remove vertices (and consequently edges)
     for (const auto v : toRemove)
     {
+        g.logVertex(v, "minorScc");
         clear_vertex(v, g);
         remove_vertex(v, g);
     }
@@ -174,11 +265,10 @@ inline void dropMinorSCCs(RiGraph &g)
 inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const RiGraph &g)
 {
     NodeDegreeDeltaArray deltas(num_vertices(g));
-    auto [b, e] = edges(g);
-    for (; b != e; ++b)
+    for (const auto e : boost::make_iterator_range(edges(g)))
     {
-        deltas[source(*b, g)] += 1;
-        deltas[target(*b, g)] -= 1;
+        deltas[source(e, g)] += 1;
+        deltas[target(e, g)] -= 1;
     }
     return deltas;
 }
@@ -186,7 +276,7 @@ inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const RiGraph &g)
 // Checks whether graph is Eulerian based on node degree deltas
 inline bool isEulerianGraph(const NodeDegreeDeltaArray &deltas)
 {
-    for (auto d : deltas)
+    for (const auto d : deltas)
     {
         if (d != 0)
         {
@@ -210,10 +300,9 @@ inline Path findEulerianCircuit(const RiGraph &g, const Vertex source)
     // prepare initial state
     const auto nbOfVertices = num_vertices(g);
     std::vector<EdgeIt> unusedEdges(nbOfVertices);
-    auto [vb, ve] = vertices(g);
-    for (; vb != ve; ++vb)
+    for (const auto u : boost::make_iterator_range(vertices(g)))
     {
-        unusedEdges[*vb] = out_edges(*vb, g).first;
+        unusedEdges[u] = out_edges(u, g).first;
     }
     std::stack<Vertex> st;
     Path circuit;
@@ -223,17 +312,17 @@ inline Path findEulerianCircuit(const RiGraph &g, const Vertex source)
     st.push(source);
     while (!st.empty())
     {
-        auto v = st.top();
-        if (auto e = unusedEdges[v]; e != out_edges(v, g).second)
+        const auto u = st.top();
+        if (const auto e = unusedEdges[u]; e != out_edges(u, g).second)
         {
-            // take next edge v->u
-            auto u = target(*e, g);
-            unusedEdges[v]++;
-            st.push(u);
+            // take next edge u->v
+            const auto v = target(*e, g);
+            unusedEdges[u]++;
+            st.push(v);
         }
         else
         {
-            circuit.emplace_back(v);
+            circuit.emplace_back(u);
             st.pop();
         }
     }
@@ -326,6 +415,7 @@ inline ShortestPath shortestPath(const RiGraph &g, const Vertex s, const Vertex 
     catch (const Vertex &)
     {
         // path to target is found
+        BOOST_ASSERT(dists[t] != INVALID_EDGE_WEIGHT);
         return {extractPath(preds, s, t), dists[t]};
     }
 
@@ -350,7 +440,7 @@ oneToMany(const RiGraph &g, const Vertex source, const std::vector<Vertex> &targ
     for (auto t : targets)
     {
         auto &sp = paths.emplace_back();
-        auto cost = dists[t];
+        const auto cost = dists[t];
         if (cost == INVALID_EDGE_WEIGHT)
         {
             // no path found
@@ -442,11 +532,11 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
     auto weightMap = get(edge_weight, g);
     auto revMap = get(edge_reverse, g);
 
-    auto superSource = add_vertex(-1, g);
-    auto superSink = add_vertex(-1, g);
+    const auto superSource = add_vertex(-1, g);
+    const auto superSink = add_vertex(-1, g);
 
     // helper
-    auto const addEdge = [&](V from, V to, uint32_t capacity, int32_t cost)
+    const auto addEdge = [&](const V from, const V to, const uint32_t capacity, const int32_t cost)
     {
         E e, rev;
         bool success;
@@ -465,17 +555,18 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
 
     // populate graph
     std::unordered_map<Vertex, V> sinks; // to check already added sinks
+    sinks.reserve(pathMatrix.rows[0].columns.size());
     for (const auto &[rIdx, s] : adaptors::index(pathMatrix.rows))
     {
         // insert new surplus node and connect it with super-source
-        auto sv = add_vertex(rIdx, g);
-        auto capacity = std::abs(deltas[s.source]);
+        const auto sv = add_vertex(rIdx, g);
+        const auto capacity = std::abs(deltas[s.source]);
         addEdge(superSource, sv, capacity, 0);
 
         for (const auto &[cIdx, d] : adaptors::index(s.columns))
         {
             V dv = McfGraph::null_vertex();
-            if (auto it = sinks.find(d.target); it != sinks.cend())
+            if (const auto it = sinks.find(d.target); it != sinks.cend())
             {
                 // sink node was already inserted
                 dv = it->second;
@@ -486,11 +577,11 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
                 dv = add_vertex(cIdx, g);
                 sinks[d.target] = dv;
                 // connect new deficit node with the sink
-                auto capacity = deltas[d.target];
+                const auto capacity = deltas[d.target];
                 addEdge(dv, superSink, capacity, 0);
             }
             // connect surplus node to deficit one if path exists
-            if (auto cost = d.path.cost; cost != INVALID_EDGE_WEIGHT)
+            if (const auto cost = d.path.cost; cost != INVALID_EDGE_WEIGHT)
             {
                 addEdge(sv, dv, maxCapacity, cost.__value);
             }
@@ -515,6 +606,8 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
 {
     using namespace boost;
 
+    BOOST_ASSERT(!pathMatrix.rows.empty());
+
     // build min-cost flow graph
     auto [g, superSource, superSink] = buildMcfGraph(pathMatrix, deltas, maxCapacity);
     auto vertexToIdxMap = get(vertex_name, g);
@@ -527,19 +620,22 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
     // prepare result
     MinCostFlow result;
     result.reserve(pathMatrix.rows.size());
-    for (auto e : make_iterator_range(edges(g)))
+    for (const auto e : make_iterator_range(edges(g)))
     {
-        auto s = source(e, g);
-        auto t = target(e, g);
-        if (s == superSource || t == superSink)
+        const auto s = source(e, g);
+        const auto t = target(e, g);
+        if (s == superSource || s == superSink || t == superSink || t == superSource)
         {
             // ignore virtual edges
             continue;
         }
         // add edge with positive flow to result
-        if (auto flow = capacityMap[e] - residualCapacityMap[e]; flow > 0)
+        if (const auto flow = capacityMap[e] - residualCapacityMap[e]; flow > 0)
         {
-            result.emplace_back(vertexToIdxMap[s], vertexToIdxMap[t], flow);
+            const auto row = vertexToIdxMap[s];
+            const auto col = vertexToIdxMap[t];
+            BOOST_ASSERT(row < pathMatrix.rows.size() && col < pathMatrix.rows[0].columns.size());
+            result.emplace_back(row, col, flow);
         }
     }
 
@@ -587,7 +683,7 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
     const auto pathMatrix = manyToMany(g, surplusNodes, deficitNodes);
 
     // solve min-cost flow to get edge duplication requirements
-    MinCostFlow mcf = solveMinCostFlow(pathMatrix, deltas, totalSurplus);
+    const MinCostFlow mcf = solveMinCostFlow(pathMatrix, deltas, totalSurplus);
     if (mcf.empty())
     {
         util::Log(logERROR) << "MCF could not be solved";
@@ -595,24 +691,27 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
     }
 
     // duplicate edges based on flow value
-    for (const auto &e : mcf)
+    for (const auto &edgeFlow : mcf)
     {
-        const auto &row = pathMatrix.rows[e.sIdx];
-        const auto &col = row.columns[e.tIdx];
-        for (auto i = 0U; i < e.flow; ++i)
+        const auto &row = pathMatrix.rows[edgeFlow.sIdx];
+        const auto &col = row.columns[edgeFlow.tIdx];
+        for ([[maybe_unused]] const auto reps : util::irange(0U, edgeFlow.flow))
         {
             const auto &p = col.path.path;
+            BOOST_ASSERT(p.size() > 1);
             for (auto it = std::next(p.cbegin()); it != p.cend(); ++it)
             {
-                auto u = *std::prev(it);
-                auto v = *it;
-                auto [baseEdge, found] = edge(u, v, g);
-                BOOST_ASSERT(found);
+                const auto u = *std::prev(it);
+                const auto v = *it;
+                const auto [baseEdge, exists] = edge(u, v, g);
+                BOOST_ASSERT(exists);
                 // duplicate edge
-                auto [dupEdge, isNew] = add_edge(u, v, g);
+                const auto node = get(boost::edge_name, g, baseEdge);
+                const auto weight = get(boost::edge_weight, g, baseEdge);
+                const auto [dupEdge, isNew] = add_edge(u, v, g);
                 BOOST_ASSERT(isNew);
-                put(boost::edge_name, g, dupEdge, get(boost::edge_name, g, baseEdge));
-                put(boost::edge_weight, g, dupEdge, get(boost::edge_weight, g, baseEdge));
+                put(boost::edge_name, g, dupEdge, node);
+                put(boost::edge_weight, g, dupEdge, weight);
                 // adjust degree deltas
                 ++deltas[u];
                 --deltas[v];
@@ -653,13 +752,13 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
 
     BOOST_CONCEPT_ASSERT((InputGraphConcept<BaseGraph>));
 
-    RiGraph out;
+    RiGraph out{g.GetFacade()};
 
     // helper
     auto const addEdge =
         [&out](const Vertex u, const Vertex v, const EdgeID edgeName, const EdgeWeight weight)
     {
-        auto [e, isNew] = add_edge(u, v, out);
+        const auto [e, isNew] = add_edge(u, v, out);
         BOOST_ASSERT(isNew);
         put(edge_name, out, e, edgeName);
         put(edge_weight, out, e, weight);
@@ -686,14 +785,14 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
                 continue;
             }
 
-            auto v = g.GetTarget(e);
-            auto w = g.GetEdgeWeight(u, e);
+            const auto v = g.GetTarget(e);
+            const auto w = g.GetEdgeWeight(u, e);
             BOOST_ASSERT(u != v && w != INVALID_EDGE_WEIGHT);
 
             if (!vmap.contains(v))
             {
                 // unvisited -> new vertex and edge
-                Vertex newVertex = add_vertex(v, out);
+                const Vertex newVertex = add_vertex(v, out);
                 vmap[v] = newVertex;
                 // new edge
                 addEdge(curVertex, newVertex, e, w);
@@ -702,7 +801,7 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
             else
             {
                 // already visited -> new edge only
-                auto targetVertex = vmap[v];
+                const auto targetVertex = vmap[v];
                 addEdge(curVertex, targetVertex, e, w);
             }
         }
@@ -731,21 +830,21 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
     bool uniqueParent = false;
 
     // populate/sort edges for cheapest-first visit order
-    for (auto v : make_iterator_range(vertices(g)))
+    for (const auto u : make_iterator_range(vertices(g)))
     {
-        auto &vEdges = unusedEdges[v].second;
-        vEdges.reserve(out_degree(v, g));
-        for (auto e : make_iterator_range(out_edges(v, g)))
+        auto &uEdges = unusedEdges[u].second;
+        uEdges.reserve(out_degree(u, g));
+        for (const auto e : make_iterator_range(out_edges(u, g)))
         {
-            vEdges.emplace_back(e);
+            uEdges.emplace_back(e);
         }
         // sort edges by their weight
-        std::stable_sort(vEdges.begin(),
-                         vEdges.end(),
+        std::stable_sort(uEdges.begin(),
+                         uEdges.end(),
                          [&g](auto a, auto b)
                          { return get(edge_weight, g, a) < get(edge_weight, g, b); });
         // set initial iterator
-        unusedEdges[v].first = vEdges.cbegin();
+        unusedEdges[u].first = uEdges.cbegin();
     }
 
     // prepare result
@@ -763,13 +862,12 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
     st.push(start);
     while (!st.empty())
     {
-        auto v = st.top();
-        const auto &vEdges = unusedEdges[v].second;
-        auto eEnd = vEdges.cend();
+        const auto u = st.top();
+        const auto &uEdges = unusedEdges[u].second;
         std::optional<EdgeIt> nextEdge;
-        if (auto e = unusedEdges[v].first; e != eEnd)
+        if (auto e = unusedEdges[u].first; e != uEdges.cend())
         {
-            for (; e != eEnd; ++e)
+            for (; e != uEdges.cend(); ++e)
             {
                 // check that target vertex is unvisited
                 if (!visitedNodes.contains(target(*e, g)))
@@ -780,19 +878,11 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             }
 
             // all unvisited edges point to already visited nodes
-            if (!nextEdge && !visitedNodes.contains(v))
+            if (!nextEdge && !visitedNodes.contains(u))
             {
-                if (out_degree(v, g) == 1)
-                {
-                    // add unique successor to circuit
-                    auto u = target(*vEdges.cbegin(), g);
-                    circuit.emplace_back(u);
-                }
-                else
-                {
-                    // out-disjoint node to be connected later
-                    disjointOutNodes.emplace(v);
-                }
+                // out-disjoint node to be connected later
+                g.logVertexEnd(u, "disjointOut");
+                disjointOutNodes.emplace(u);
             }
         }
 
@@ -801,29 +891,32 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             if (uniqueParent)
             {
                 // ensure edge to this unique parent exists
-                circuit.emplace_back(v);
+                BOOST_ASSERT(u != circuit.back());
+                circuit.emplace_back(u);
                 uniqueParent = false;
             }
-            // take next edge v->u
+            // take next edge u->v
             auto e = *nextEdge;
-            auto u = target(*e, g);
-            unusedEdges[v].first = ++e;
-            st.push(u);
+            const auto v = target(*e, g);
+            unusedEdges[u].first = ++e;
+            st.push(v);
         }
         else
         {
-            uniqueParent = in_degree(v, g) == 1;
+            uniqueParent = in_degree(u, g) == 1;
             if (!uniqueParent)
             {
                 // in-disjoint node to be connected later
-                disjointInNodes.emplace(v);
+                g.logVertexStart(u, "disjointIn");
+                disjointInNodes.emplace(u);
             }
-            circuit.emplace_back(v);
+            BOOST_ASSERT(u != circuit.back());
+            circuit.emplace_back(u);
             st.pop();
         }
 
         // mark node as visited
-        visitedNodes.emplace(v);
+        visitedNodes.emplace(u);
     }
 
     std::reverse(circuit.begin(), circuit.end());
@@ -849,9 +942,9 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
     // 2) Process regular edges from the circuit
     for (auto it = std::next(circuit.cbegin()); it != circuit.cend(); ++it)
     {
-        auto u = *std::prev(it);
-        auto v = *it;
-        auto [e, exists] = edge(u, v, g);
+        const auto u = *std::prev(it);
+        const auto v = *it;
+        const auto [e, exists] = edge(u, v, g);
         if (exists)
         {
             usedEdges.emplace(e);
@@ -877,28 +970,48 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
     auto revg = make_reverse_graph(g);
     shortestPaths(revg, start, revPreds, revDists);
 
-    // 4) Fix out-disjoints by connecting them to start using best edge
-    for (auto u : disjointOutNodes)
+    // 4) Fix out-disjoints by connecting them to start using shortest path
+    for (const auto u : disjointOutNodes)
     {
-        BOOST_ASSERT(out_degree(u, g) > 1);
         BOOST_ASSERT(revDists[u] != INVALID_EDGE_WEIGHT);
-        Vertex v = revPreds[u]; // pred indicates best edge
-        auto [e, exists] = edge(u, v, g);
-        BOOST_ASSERT(exists);
-        usedEdges.emplace(e);
-        // fix in-disjoint with this edge (if any)
-        disjointInNodes.erase(v);
+
+        const auto sp = extractPath(revPreds, start, u);
+        BOOST_ASSERT(sp.size() >= 2);
+
+        // iterate in reverse due to reversed graph
+        auto it = sp.crbegin();
+        ++it;
+        for (; it != sp.crend(); ++it)
+        {
+            const auto from = *std::prev(it);
+            const auto to = *it;
+            const auto [e, exists] = edge(from, to, g);
+            BOOST_ASSERT(exists);
+            usedEdges.emplace(e);
+            // fix in-disjoint with this edge (if any)
+            disjointInNodes.erase(to);
+        }
     }
 
-    // 5) Fix leftover in-disjoints by connecting start to them using best edge
-    for (auto v : disjointInNodes)
+    // 5) Fix leftover in-disjoints by connecting start to them using shortest path
+    for (const auto v : disjointInNodes)
     {
         BOOST_ASSERT(in_degree(v, g) > 1);
         BOOST_ASSERT(dists[v] != INVALID_EDGE_WEIGHT);
-        Vertex u = preds[v]; // pred indicates best edge
-        auto [e, exists] = edge(u, v, g);
-        BOOST_ASSERT(exists);
-        usedEdges.emplace(e);
+
+        const auto sp = extractPath(preds, start, v);
+        BOOST_ASSERT(sp.size() >= 2);
+
+        auto it = sp.cbegin();
+        ++it;
+        for (; it != sp.cend(); ++it)
+        {
+            const auto from = *std::prev(it);
+            const auto to = *it;
+            const auto [e, exists] = edge(from, to, g);
+            BOOST_ASSERT(exists);
+            usedEdges.emplace(e);
+        }
     }
 
     return usedEdges;
@@ -909,8 +1022,8 @@ inline auto collectCostlyEdges(RiGraph &g)
 {
     auto const isShortestPath = [&g](const Edge e)
     {
-        auto u = source(e, g);
-        auto v = target(e, g);
+        const auto u = source(e, g);
+        const auto v = target(e, g);
         const auto sp = shortestPath(g, u, v);
         const auto &p = sp.path;
         BOOST_ASSERT(!p.empty());
@@ -942,14 +1055,15 @@ inline void optimizeRiGraph(RiGraph &g)
     const auto costlyEdges = collectCostlyEdges(g);
     for (const auto e : costlyEdges)
     {
+        g.logEdge(e, "costly");
         remove_edge(e, g);
     }
 
     BOOST_ASSERT(isValidGraph(g));
 
     // 2) Collect optimal edges
-    Vertex start{0};
-    auto usedEdges = collectMinCostEdgeSet(g, start);
+    const Vertex start{0};
+    const auto usedEdges = collectMinCostEdgeSet(g, start);
 
     // 3) Collect unused edges
     std::vector<Edge> unusedEdges;
@@ -961,13 +1075,21 @@ inline void optimizeRiGraph(RiGraph &g)
             // edge is estimated as not optimal -> remove
             unusedEdges.emplace_back(e);
         }
+        else
+        {
+            g.logEdge(e, "used");
+        }
     }
 
     // 4) Actual edge removal
     for (const auto e : unusedEdges)
     {
+        g.logEdge(e, "unused");
         remove_edge(e, g);
     }
+
+    // TODO remove after complex intersection fixes
+    dropMinorSCCs(g);
 }
 
 // Route inspection (directed Chinese Postman Problem) solver
@@ -981,7 +1103,7 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
     // check whether graph is already Eulerian
     if (isEulerianGraph(deltas))
     {
-        if (auto circuit = findEulerianCircuit(g, s); !circuit.empty())
+        if (const auto circuit = findEulerianCircuit(g, s); !circuit.empty())
         {
             // Eulerian circuit found -> done
             return circuit;
@@ -993,7 +1115,7 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
         if (augmentImbalancedGraph(g, deltas) && isEulerianGraph(deltas))
         {
             // graph is now Eulerian -> find circuit
-            if (auto circuit = findEulerianCircuit(g, s); !circuit.empty())
+            if (const auto circuit = findEulerianCircuit(g, s); !circuit.empty())
             {
                 // Eulerian circuit found -> done
                 return circuit;
@@ -1009,32 +1131,12 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
 // Polygon restriction utils
 //-------------------------------------------------------------------------------------------------
 
-template <typename DataFacade>
-util::Coordinate getNodeEndpoint(const DataFacade &facade, const NodeID u)
-{
-    auto gi = facade.GetGeometryIndex(u);
-    if (gi.forward)
-    {
-        auto geom = facade.GetUncompressedForwardGeometry(gi.id);
-        BOOST_ASSERT(!geom.empty());
-        auto endNode = geom.back();
-        return facade.GetCoordinateOfNode(endNode);
-    }
-    else
-    {
-        auto geom = facade.GetUncompressedReverseGeometry(gi.id);
-        BOOST_ASSERT(!geom.empty());
-        auto endNode = geom.back();
-        return facade.GetCoordinateOfNode(endNode);
-    }
-}
-
 // Input graph edge filter based on the area inside a polygon
 template <typename DataFacade> struct PolygonFilter
 {
     bool operator()(const EdgeID &e) const
     {
-        const auto p = getNodeEndpoint(facade, facade.GetTarget(e));
+        const auto [_, p] = getNodeEndpoints(facade, facade.GetTarget(e));
         return polygon.Contains(p);
     }
 
@@ -1059,25 +1161,21 @@ inline std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const det
         return {};
     }
 
-    const auto toNodeID = [&g](const detail::Vertex v) { return get(boost::vertex_name, g, v); };
-
     std::vector<NodeID> route;
     route.reserve(path.size());
 
-    auto it = path.cbegin();
-    route.emplace_back(toNodeID(*it));
-    ++it;
-    for (; it != path.cend(); ++it)
-    {
-        auto n = toNodeID(*it);
-        // NBG based RiGraph has two nodes per EBG node, so we ignore duplication
-        if (route.back() != n)
-        {
-            // TODO: improve final route by replacing costly edges with shortest paths (which
-            // possibly go beyond target polygon)
-            route.emplace_back(n);
-        }
-    }
+    std::transform(path.cbegin(),
+                   path.cend(),
+                   std::back_inserter(route),
+                   [&g](const auto v)
+                   {
+                       // extract original NodeID
+                       g.logVertexEnd(v, "final route");
+                       return get(boost::vertex_name, g, v);
+                   });
+
+    // TODO: improve final route by replacing costly edges with shortest paths (which
+    // possibly go beyond limiting polygon)
 
     return route;
 }
@@ -1110,7 +1208,7 @@ std::vector<NodeID> routeInspection(const DataFacade<Algorithm> &facade,
 
     // prepare graph data
     BaseGraph baseGraph{facade};
-    RiGraph rig;
+    RiGraph rig{baseGraph.GetFacade()};
 
     if (!polygon.empty())
     {

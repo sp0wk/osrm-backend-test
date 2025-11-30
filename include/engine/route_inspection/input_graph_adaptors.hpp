@@ -16,7 +16,6 @@
 #include <boost/range/concepts.hpp>
 
 #include <type_traits>
-#include <unordered_set>
 
 namespace osrm::engine::route_inspection
 {

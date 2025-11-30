@@ -22,13 +22,10 @@ namespace osrm::engine::plugins
 // given the node order in which to visit, compute the actual route (with geometry, travel time and
 // so on) and return the result
 // NOTE: Final route may freely go outside polygon if it's more optimal to do so
-InternalRouteResult
-RouteInspectionPlugin::ComputeRoute(const RoutingAlgorithmsInterface &algorithms,
-                                    const std::vector<PhantomNodeCandidates> &waypoint_candidates,
-                                    const std::vector<NodeID> & /* ri_path */) const
+InternalRouteResult RouteInspectionPlugin::ComputeRoute(
+    const RoutingAlgorithmsInterface &algorithms,
+    const std::vector<PhantomNodeCandidates> &waypoint_candidates) const
 {
-    // TODO handle ri_path
-
     auto min_route = algorithms.ShortestPathSearch(waypoint_candidates, {false});
     BOOST_ASSERT_MSG(min_route.shortest_path_weight < INVALID_EDGE_WEIGHT, "unroutable route");
     return min_route;
@@ -113,51 +110,48 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
                      result);
     }
 
-    auto snapped_phantoms = SnapPhantomNodes(std::move(phantom_node_pairs));
+    const auto snapped_phantoms = SnapPhantomNodes(std::move(phantom_node_pairs));
     BOOST_ASSERT(snapped_phantoms.size() == parameters.coordinates.size());
 
-    const auto &startPhantom = snapped_phantoms.front().front();
-    std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, startPhantom, polygon);
+    const auto &start_phantom = snapped_phantoms.front().front();
+    std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, start_phantom, polygon);
     if (ri_path.size() < 3 || ri_path.front() != ri_path.back())
     {
         return Error("NoRoute", "Couldn't find a valid roundtrip route", result);
     }
 
     // TODO rework
+    api::RouteInspectionParameters ext_params = parameters;
+    // prepare all coords
+    ext_params.coordinates.pop_back();
+    for (const auto i : util::irange<std::size_t>(1UL, ri_path.size() - 1))
     {
-        auto lastPhantom = std::move(snapped_phantoms.back());
-        snapped_phantoms.pop_back();
-        for (const auto i : util::irange<std::size_t>(1UL, ri_path.size() - 1))
-        {
-            auto node = ri_path[i];
-            auto c = route_inspection::detail::getNodeEndpoint(facade, node);
+        const auto node = ri_path[i];
+        const auto [_, c] = route_inspection::detail::getNodeEndpoints(facade, node);
+        BOOST_ASSERT(c.IsValid());
+        ext_params.coordinates.emplace_back(c);
+    }
+    ext_params.coordinates.emplace_back(ext_params.coordinates.front());
 
-            const bool use_bearings = !parameters.bearings.empty();
-            const bool use_radiuses = !parameters.radiuses.empty();
-            const bool use_approaches = !parameters.approaches.empty();
-            auto p = facade.NearestPhantomNodes(
-                c,
-                1,
-                use_radiuses ? parameters.radiuses[i] : default_radius,
-                use_bearings ? parameters.bearings[i] : std::nullopt,
-                use_approaches && parameters.approaches[i] ? parameters.approaches[i].value()
-                                                           : engine::Approach::UNRESTRICTED);
-            if (p.empty())
-            {
-                return Error("NoRoute", "Couldn't snap route coordinates to roads", result);
-            }
-            snapped_phantoms.emplace_back(std::vector<PhantomNode>{p.front().phantom_node});
-        }
-        snapped_phantoms.emplace_back(lastPhantom);
+    // get phantoms
+    auto ext_phantom_node_pairs = GetPhantomNodes(facade, ext_params);
+    if (ext_phantom_node_pairs.size() != ext_params.coordinates.size())
+    {
+        return Error("NoSegment",
+                     MissingPhantomErrorMessage(ext_phantom_node_pairs, ext_params.coordinates),
+                     result);
     }
 
+    const auto ext_snapped_phantoms = SnapPhantomNodes(std::move(ext_phantom_node_pairs));
+    BOOST_ASSERT(ext_snapped_phantoms.size() == ext_params.coordinates.size());
+
     // get the route when visiting all nodes in optimized order
-    InternalRouteResult route = ComputeRoute(algorithms, snapped_phantoms, ri_path);
+    InternalRouteResult route = ComputeRoute(algorithms, ext_snapped_phantoms);
 
     // get api response
     const std::vector<InternalRouteResult> routes = {route};
-    api::RouteInspectionAPI ri_api{facade, parameters};
-    ri_api.MakeResponse(routes, snapped_phantoms, result);
+    const api::RouteInspectionAPI ri_api{facade, ext_params};
+    ri_api.MakeResponse(routes, ext_snapped_phantoms, result);
 
     return Status::Ok;
 }
