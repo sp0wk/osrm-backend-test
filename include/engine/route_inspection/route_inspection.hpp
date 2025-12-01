@@ -600,6 +600,7 @@ inline auto buildMcfGraph(McfGraph &g,
             {
                 // sink node was already inserted
                 tv = it->second;
+                BOOST_ASSERT(get(vertex_name, g, tv) == static_cast<std::size_t>(cIdx));
             }
             else
             {
@@ -666,8 +667,11 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
             continue;
         }
         // add edge with positive flow to result
-        if (const auto flow = capacityMap[e] - residualCapacityMap[e]; flow > 0)
+        const auto cap = capacityMap[e];
+        const auto residualCap = residualCapacityMap[e];
+        if (cap > residualCap)
         {
+            const auto flow = cap - residualCap;
             const auto row = vertexToIdxMap[s];
             const auto col = vertexToIdxMap[t];
             BOOST_ASSERT(row < pathMatrix.rows.size() && col < pathMatrix.rows[0].columns.size());
