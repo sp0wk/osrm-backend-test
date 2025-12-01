@@ -119,7 +119,7 @@ class RiGraph : public RiGraphBase
         const auto to = get(boost::vertex_name, *this, v);
         std::cout << label << " edge " << u << " -> " << v << " (" << from << " -> " << to
                   << "): [[" << c1.lon << "," << c1.lat << "],[" << c2.lon << "," << c2.lat << "],["
-                  << c3.lon << "," << c3.lat << "]]," << std::endl;
+                  << c4.lon << "," << c4.lat << "]]," << std::endl;
     }
 
     void logEdge(const Vertex u, const Vertex v, std::string_view label = {}) const
@@ -226,30 +226,32 @@ inline void dropMinorSCCs(RiGraph &g)
 
     std::vector<int> sccs(num_vertices(g));
     auto num = strong_components(g, make_iterator_property_map(sccs.begin(), get(vertex_index, g)));
-
-    // find largest scc
-    std::vector<int> counts(num, 0);
-    for (const auto scc : sccs)
+    if (num == 1)
     {
-        ++counts[scc];
+        // only main SCC already
+        return;
     }
-    int largestSCC =
-        std::distance(counts.cbegin(), std::max_element(counts.cbegin(), counts.cend()));
+
+    // main SCC is the one which contains start vertex
+    const auto mainSCC = sccs[0];
 
     // remove minor sccs vertices
     std::vector<Vertex> toRemove;
-    toRemove.reserve(sccs.size() - counts[largestSCC]);
-    // iterate in reverse to remove vertices in decreasing order ()
-    for (const auto v : adaptors::reverse(util::irange<std::size_t>(0, sccs.size())))
+    toRemove.reserve(sccs.size() / 2);
+
+    for (const auto v : util::irange<std::size_t>(0, sccs.size()))
     {
-        if (sccs[v] != largestSCC)
+        if (sccs[v] != mainSCC)
         {
             toRemove.emplace_back(static_cast<Vertex>(v));
         }
     }
 
     // remove vertices (and consequently edges)
-    for (const auto v : toRemove)
+    // NOTE: since we use vecS to store vertices in adjacency_list, we're iterating in reverse to
+    // remove vertices in decreasing order (to not invalidate other vertex descriptors inside
+    // toRemove)
+    for (const auto v : adaptors::reverse(toRemove))
     {
         g.logVertex(v, "minorScc");
         clear_vertex(v, g);
@@ -535,9 +537,13 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
     const auto superSource = add_vertex(-1, g);
     const auto superSink = add_vertex(-1, g);
 
-    // helper
+    // helpers
+    const auto addVertex = [&g](const auto idx) { return add_vertex(idx, g); };
+
     const auto addEdge = [&](const V from, const V to, const uint32_t capacity, const int32_t cost)
     {
+        BOOST_ASSERT(from != to && capacity > 0 && cost >= 0);
+
         E e, rev;
         bool success;
         tie(e, success) = add_edge(from, to, g);
@@ -559,7 +565,7 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
     for (const auto &[rIdx, s] : adaptors::index(pathMatrix.rows))
     {
         // insert new surplus node and connect it with super-source
-        const auto sv = add_vertex(rIdx, g);
+        const auto sv = addVertex(rIdx);
         const auto capacity = std::abs(deltas[s.source]);
         addEdge(superSource, sv, capacity, 0);
 
@@ -574,10 +580,10 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
             else
             {
                 // insert new sink node and connect it to super-sink
-                dv = add_vertex(cIdx, g);
+                dv = addVertex(cIdx);
                 sinks[d.target] = dv;
                 // connect new deficit node with the sink
-                const auto capacity = deltas[d.target];
+                const auto capacity = std::abs(deltas[d.target]);
                 addEdge(dv, superSink, capacity, 0);
             }
             // connect surplus node to deficit one if path exists
@@ -731,6 +737,19 @@ struct NoFilter
     template <typename... Args> constexpr bool operator()(Args &&...) const { return true; }
 };
 
+// Input graph edge filter based on the area inside a polygon
+template <typename DataFacade> struct PolygonFilter
+{
+    bool operator()(const EdgeID &e) const
+    {
+        const auto [_, p] = getNodeEndpoints(facade, facade.GetTarget(e));
+        return polygon.Contains(p);
+    }
+
+    const DataFacade &facade;
+    const util::Polygon &polygon;
+};
+
 // Builds a RI (route inspection) compatible node-based directed subgraph using following rules:
 // - Starts at the "start" node of the base graph
 // - Building a subgraph happens by BFS-traversing base graph
@@ -753,23 +772,31 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
     BOOST_CONCEPT_ASSERT((InputGraphConcept<BaseGraph>));
 
     RiGraph out{g.GetFacade()};
+    std::unordered_map<NodeID, Vertex> vmap; // old-new vertex mappings
 
-    // helper
-    auto const addEdge =
+    // helpers
+    const auto addVertex = [&](const auto v)
+    {
+        const Vertex newVertex = add_vertex(v, out);
+        vmap[v] = newVertex;
+        return newVertex;
+    };
+
+    const auto addEdge =
         [&out](const Vertex u, const Vertex v, const EdgeID edgeName, const EdgeWeight weight)
     {
         const auto [e, isNew] = add_edge(u, v, out);
         BOOST_ASSERT(isNew);
         put(edge_name, out, e, edgeName);
         put(edge_weight, out, e, weight);
+        return e;
     };
 
     // BFS traversal with filtering
-    std::unordered_map<NodeID, Vertex> vmap; // old-new vertex mappings
     std::queue<NodeID> q;
 
     // add first vertex
-    vmap[start] = add_vertex(start, out);
+    addVertex(start);
     q.push(start);
 
     while (!q.empty())
@@ -792,10 +819,7 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
             if (!vmap.contains(v))
             {
                 // unvisited -> new vertex and edge
-                const Vertex newVertex = add_vertex(v, out);
-                vmap[v] = newVertex;
-                // new edge
-                addEdge(curVertex, newVertex, e, w);
+                addEdge(curVertex, addVertex(v), e, w);
                 q.push(v);
             }
             else
@@ -807,7 +831,14 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
         }
     }
 
-    // ensure single SCC
+    // verify start connectivity
+    if (in_degree(Vertex{0}, out) == 0)
+    {
+        util::Log(logDEBUG) << "Invalid RiGraph: start vertex has 0 incoming edges";
+        return RiGraph{g.GetFacade()};
+    }
+
+    // ensure single SCC without dead-ends
     dropMinorSCCs(out);
 
     return out;
@@ -988,8 +1019,12 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
             const auto [e, exists] = edge(from, to, g);
             BOOST_ASSERT(exists);
             usedEdges.emplace(e);
-            // fix in-disjoint with this edge (if any)
-            disjointInNodes.erase(to);
+            // fix in-disjoint with this edge unless it's a disjoint->disjoint transition which is
+            // disallowed to prevent cycles
+            if (!disjointOutNodes.contains(from))
+            {
+                disjointInNodes.erase(to);
+            }
         }
     }
 
@@ -1087,9 +1122,6 @@ inline void optimizeRiGraph(RiGraph &g)
         g.logEdge(e, "unused");
         remove_edge(e, g);
     }
-
-    // TODO remove after complex intersection fixes
-    dropMinorSCCs(g);
 }
 
 // Route inspection (directed Chinese Postman Problem) solver
@@ -1126,23 +1158,6 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
     // route inspection search was unsuccessful
     return {};
 }
-
-//-------------------------------------------------------------------------------------------------
-// Polygon restriction utils
-//-------------------------------------------------------------------------------------------------
-
-// Input graph edge filter based on the area inside a polygon
-template <typename DataFacade> struct PolygonFilter
-{
-    bool operator()(const EdgeID &e) const
-    {
-        const auto [_, p] = getNodeEndpoints(facade, facade.GetTarget(e));
-        return polygon.Contains(p);
-    }
-
-    const DataFacade &facade;
-    const util::Polygon &polygon;
-};
 
 } // namespace detail
 
