@@ -497,52 +497,72 @@ manyToMany(const RiGraph &g, const std::vector<Vertex> &sources, const std::vect
 // Min-cost flow graph augmentation
 //-------------------------------------------------------------------------------------------------
 
+namespace mcf
+{
+
+using namespace boost;
+struct McfGraphTraits
+{
+    using EdgeListType = listS; // NOTE: listS prevents edge_descriptor invalidation
+    using VertexListType = vecS;
+
+    using BaseTraits = adjacency_list_traits<EdgeListType, VertexListType, directedS>;
+
+    using Weight = EdgeWeight::value_type;
+    using Capacity = uint32_t;
+
+    using VertexProperties = property<vertex_name_t, std::size_t>; // for PathMatrix indices
+    using EdgeProperties =
+        property<edge_weight_t,
+                 Weight,
+                 property<edge_capacity_t,
+                          Capacity,
+                          property<edge_residual_capacity_t,
+                                   Capacity,
+                                   property<edge_reverse_t, BaseTraits::edge_descriptor>>>>;
+
+    using Graph =
+        adjacency_list<EdgeListType, VertexListType, directedS, VertexProperties, EdgeProperties>;
+};
+
+using McfGraph = McfGraphTraits::Graph;
+
 /**
  * @brief Builds min-cost flow graph compatible with
  * boost::successive_shortest_path_nonnegative_weights.
  *
+ * @param g empty McfGraph to build
  * @param pathMatrix table/matrix of surplus and deficit nodes with respective shortest paths
  * between them where rows represent surplus nodes (sources) and columns - deficit nodes (targets).
  * @param deltas degree delta storage for all surplus/deficit nodes
  * @param maxCapacity total amount of surplus
- * @return auto built graph together with super-source and super-sink nodes
+ * @return auto super-source and super-sink vertex descriptors
  */
-inline auto buildMcfGraph(const PathMatrix &pathMatrix,
+inline auto buildMcfGraph(McfGraph &g,
+                          const PathMatrix &pathMatrix,
                           const NodeDegreeDeltaArray &deltas,
-                          const uint32_t maxCapacity = std::numeric_limits<uint32_t>::max())
+                          const McfGraphTraits::Capacity maxCapacity =
+                              std::numeric_limits<McfGraphTraits::Capacity>::max())
 {
-    using namespace boost;
-
+    BOOST_ASSERT(num_vertices(g) == 0 && num_edges(g) == 0);
     BOOST_ASSERT(!pathMatrix.rows.empty());
 
-    // required BGL traits
-    using Traits = adjacency_list_traits<vecS, vecS, directedS>;
-    using V = Traits::vertex_descriptor;
-    using E = Traits::edge_descriptor;
-    using VertexProperties = property<vertex_name_t, size_t>; // for vertex to matrix index map
-    using EdgeProperties = property<
-        edge_weight_t,
-        int32_t,
-        property<edge_capacity_t,
-                 uint32_t,
-                 property<edge_residual_capacity_t, uint32_t, property<edge_reverse_t, E>>>>;
-    using McfGraph = adjacency_list<vecS, vecS, directedS, VertexProperties, EdgeProperties>;
+    using V = graph_traits<McfGraph>::vertex_descriptor;
+    using E = graph_traits<McfGraph>::edge_descriptor;
+    using Cost = McfGraphTraits::Weight;
+    using Cap = McfGraphTraits::Capacity;
 
-    // create graph
-    McfGraph g;
+    // retrieve property maps
     auto capacityMap = get(edge_capacity, g);
     auto weightMap = get(edge_weight, g);
     auto revMap = get(edge_reverse, g);
 
-    const auto superSource = add_vertex(-1, g);
-    const auto superSink = add_vertex(-1, g);
-
     // helpers
     const auto addVertex = [&g](const auto idx) { return add_vertex(idx, g); };
 
-    const auto addEdge = [&](const V from, const V to, const uint32_t capacity, const int32_t cost)
+    const auto addEdge = [&](const V from, const V to, const Cap cap, const Cost cost)
     {
-        BOOST_ASSERT(from != to && capacity > 0 && cost >= 0);
+        BOOST_ASSERT(from != to && cap > 0 && cost >= 0);
 
         E e, rev;
         bool success;
@@ -551,7 +571,7 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
         tie(rev, success) = add_edge(to, from, g);
         BOOST_ASSERT(success);
 
-        capacityMap[e] = capacity;
+        capacityMap[e] = cap;
         capacityMap[rev] = 0; // reverse edge has 0 capacity
         weightMap[e] = cost;
         weightMap[rev] = -cost;
@@ -560,6 +580,10 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
     };
 
     // populate graph
+
+    const auto superSource = addVertex(-1);
+    const auto superSink = addVertex(-1);
+
     std::unordered_map<Vertex, V> sinks; // to check already added sinks
     sinks.reserve(pathMatrix.rows[0].columns.size());
     for (const auto &[rIdx, s] : adaptors::index(pathMatrix.rows))
@@ -569,32 +593,37 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
         const auto capacity = std::abs(deltas[s.source]);
         addEdge(superSource, sv, capacity, 0);
 
-        for (const auto &[cIdx, d] : adaptors::index(s.columns))
+        for (const auto &[cIdx, t] : adaptors::index(s.columns))
         {
-            V dv = McfGraph::null_vertex();
-            if (const auto it = sinks.find(d.target); it != sinks.cend())
+            V tv = McfGraph::null_vertex();
+            if (const auto it = sinks.find(t.target); it != sinks.cend())
             {
                 // sink node was already inserted
-                dv = it->second;
+                tv = it->second;
             }
             else
             {
                 // insert new sink node and connect it to super-sink
-                dv = addVertex(cIdx);
-                sinks[d.target] = dv;
+                tv = addVertex(cIdx);
+                sinks[t.target] = tv;
                 // connect new deficit node with the sink
-                const auto capacity = std::abs(deltas[d.target]);
-                addEdge(dv, superSink, capacity, 0);
+                const auto cap = std::abs(deltas[t.target]);
+                addEdge(tv, superSink, cap, 0);
             }
-            // connect surplus node to deficit one if path exists
-            if (const auto cost = d.path.cost; cost != INVALID_EDGE_WEIGHT)
+            // connect surplus node to deficit node if path exists
+            if (const auto cost = t.path.cost; cost != INVALID_EDGE_WEIGHT)
             {
-                addEdge(sv, dv, maxCapacity, cost.__value);
+                addEdge(sv, tv, maxCapacity, cost.__value);
+            }
+            else
+            {
+                util::Log(logDEBUG)
+                    << "MCF: skipping unreachable path " << s.source << " -> " << t.target;
             }
         }
     }
 
-    return std::make_tuple(std::move(g), superSource, superSink);
+    return std::make_pair(superSource, superSink);
 }
 
 /**
@@ -608,22 +637,23 @@ inline auto buildMcfGraph(const PathMatrix &pathMatrix,
  */
 inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
                                     const NodeDegreeDeltaArray &deltas,
-                                    const size_t maxCapacity = std::numeric_limits<size_t>::max())
+                                    const McfGraphTraits::Capacity maxCapacity =
+                                        std::numeric_limits<McfGraphTraits::Capacity>::max())
 {
-    using namespace boost;
-
     BOOST_ASSERT(!pathMatrix.rows.empty());
 
     // build min-cost flow graph
-    auto [g, superSource, superSink] = buildMcfGraph(pathMatrix, deltas, maxCapacity);
-    auto vertexToIdxMap = get(vertex_name, g);
-    auto capacityMap = get(edge_capacity, g);
-    auto residualCapacityMap = get(edge_residual_capacity, g);
+    McfGraph g;
+    const auto [superSource, superSink] = buildMcfGraph(g, pathMatrix, deltas, maxCapacity);
 
     // solve min-cost flow
     successive_shortest_path_nonnegative_weights(g, superSource, superSink);
 
     // prepare result
+    auto vertexToIdxMap = get(vertex_name, g);
+    auto capacityMap = get(edge_capacity, g);
+    auto residualCapacityMap = get(edge_residual_capacity, g);
+
     MinCostFlow result;
     result.reserve(pathMatrix.rows.size());
     for (const auto e : make_iterator_range(edges(g)))
@@ -647,6 +677,8 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
 
     return result;
 }
+
+} // namespace mcf
 
 // Add deficit edges to imbalanced graph through solving min-cost flow problem to make graph
 // Eulerian
@@ -689,7 +721,7 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
     const auto pathMatrix = manyToMany(g, surplusNodes, deficitNodes);
 
     // solve min-cost flow to get edge duplication requirements
-    const MinCostFlow mcf = solveMinCostFlow(pathMatrix, deltas, totalSurplus);
+    const MinCostFlow mcf = mcf::solveMinCostFlow(pathMatrix, deltas, totalSurplus);
     if (mcf.empty())
     {
         util::Log(logERROR) << "MCF could not be solved";
@@ -922,7 +954,6 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             if (uniqueParent)
             {
                 // ensure edge to this unique parent exists
-                BOOST_ASSERT(u != circuit.back());
                 circuit.emplace_back(u);
                 uniqueParent = false;
             }
@@ -941,7 +972,6 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
                 g.logVertexStart(u, "disjointIn");
                 disjointInNodes.emplace(u);
             }
-            BOOST_ASSERT(u != circuit.back());
             circuit.emplace_back(u);
             st.pop();
         }
