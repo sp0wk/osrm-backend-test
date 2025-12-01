@@ -113,7 +113,7 @@ std::optional<engine::api::RouteInspectionParameters>
 parseParameters(std::string::iterator &iter, const std::string::iterator end)
 {
     return detail::parseParameters<engine::api::RouteInspectionParameters,
-                                   RouteParametersGrammar<>>(iter, end);
+                                   RouteInspectionParametersGrammar<>>(iter, end);
 }
 
 } // namespace osrm::server::api

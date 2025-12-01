@@ -12,6 +12,7 @@
 #include <boost/assert.hpp>
 
 #include <algorithm>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -63,9 +64,28 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
     }
 
     // check input polygon
+    util::Log(logDEBUG) << [&]
+    {
+        std::ostringstream os;
+        os << "Limiting polygon coords: " << std::endl;
+        for (const auto c : parameters.polygon)
+        {
+            os << "[" << c.lon.__value << ", " << c.lat.__value << "]," << std::endl;
+        }
+        return std::move(os).str();
+    }();
+
     if (auto sz = parameters.polygon.size(); sz == 0)
     {
         return Error("TooBig", "Limiting polygon must be specified", result);
+    }
+    else if (sz < 4)
+    {
+        return Error("InvalidValue", "Polygon must have at least 4 points", result);
+    }
+    else if (parameters.polygon.front() != parameters.polygon.back())
+    {
+        return Error("InvalidValue", "Polygon's start/end points should be the same", result);
     }
     else if (max_ri_polygon_points > 0 && sz > static_cast<size_t>(max_ri_polygon_points))
     {
@@ -115,6 +135,7 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     const auto &start_phantom = snapped_phantoms.front().front();
     std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, start_phantom, polygon);
+    util::Log(logDEBUG) << "Resulting number of visited roads: " << ri_path.size();
     if (ri_path.size() < 3 || ri_path.front() != ri_path.back())
     {
         return Error("NoRoute", "Couldn't find a valid roundtrip route", result);
@@ -147,6 +168,12 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     // get the route when visiting all nodes in optimized order
     InternalRouteResult route = ComputeRoute(algorithms, ext_snapped_phantoms);
+    if (!route.is_valid())
+    {
+        return Error("NoRoute",
+                     "Couldn't find a valid roundtrip route for calculated road sequence",
+                     result);
+    }
 
     // get api response
     const std::vector<InternalRouteResult> routes = {route};

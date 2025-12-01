@@ -2,6 +2,7 @@
 
 #include "server/service/match_service.hpp"
 #include "server/service/nearest_service.hpp"
+#include "server/service/route_inspection_service.hpp"
 #include "server/service/route_service.hpp"
 #include "server/service/table_service.hpp"
 #include "server/service/tile_service.hpp"
@@ -20,6 +21,8 @@ ServiceHandler::ServiceHandler(osrm::EngineConfig &config) : routing_machine(con
     service_map["trip"] = std::make_unique<service::TripService>(routing_machine);
     service_map["match"] = std::make_unique<service::MatchService>(routing_machine);
     service_map["tile"] = std::make_unique<service::TileService>(routing_machine);
+    service_map["route-inspection"] =
+        std::make_unique<service::RouteInspectionService>(routing_machine);
 }
 
 engine::Status ServiceHandler::RunQuery(api::ParsedURL parsed_url,
