@@ -43,6 +43,13 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
         return Status::Error;
     }
 
+    if (!algorithms.SupportsRouteInspection())
+    {
+        return Error("NotImplemented",
+                     "Route inspection is not supported by the chosen search algorithm.",
+                     result);
+    }
+
     if (!algorithms.HasShortestPathSearch())
     {
         return Error("NotImplemented",

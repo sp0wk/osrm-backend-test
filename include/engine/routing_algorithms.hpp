@@ -55,6 +55,7 @@ class RoutingAlgorithmsInterface
     virtual bool HasMapMatching() const = 0;
     virtual bool HasManyToManySearch() const = 0;
     virtual bool SupportsDistanceAnnotationType() const = 0;
+    virtual bool SupportsRouteInspection() const = 0;
     virtual bool HasGetTileTurns() const = 0;
     virtual bool HasExcludeFlags() const = 0;
     virtual bool IsValid() const = 0;
@@ -130,6 +131,11 @@ template <typename Algorithm> class RoutingAlgorithms final : public RoutingAlgo
     bool SupportsDistanceAnnotationType() const final override
     {
         return routing_algorithms::SupportsDistanceAnnotationType<Algorithm>::value;
+    }
+
+    bool SupportsRouteInspection() const final override
+    {
+        return routing_algorithms::SupportsRouteInspection<Algorithm>::value;
     }
 
     bool HasGetTileTurns() const final override
