@@ -24,8 +24,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <queue>
+#include <sstream>
 #include <stack>
 #include <tuple>
 #include <utility>
@@ -1120,6 +1122,8 @@ inline void optimizeRiGraph(RiGraph &g)
 {
     using namespace boost;
 
+    util::Log(logDEBUG) << "[optimizeRiGraph]  Initial number of edges: " << num_edges(g);
+
     // 1) Preprocessing to prune edges which are not shortest paths
     const auto costlyEdges = collectCostlyEdges(g);
     for (const auto e : costlyEdges)
@@ -1129,6 +1133,8 @@ inline void optimizeRiGraph(RiGraph &g)
     }
 
     BOOST_ASSERT(isValidGraph(g));
+    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of edges after removing costly edges: "
+                        << num_edges(g);
 
     // 2) Collect optimal edges
     const Vertex start{0};
@@ -1156,6 +1162,9 @@ inline void optimizeRiGraph(RiGraph &g)
         g.logEdge(e, "unused");
         remove_edge(e, g);
     }
+
+    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of edges after removing unused edges: "
+                        << num_edges(g);
 }
 
 // Route inspection (directed Chinese Postman Problem) solver
@@ -1204,9 +1213,9 @@ inline Path routeInspectionImpl(RiGraph &g, const Vertex s)
  */
 inline std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const detail::Path &path)
 {
-    if (path.empty())
+    if (const auto sz = path.size(); sz < 3)
     {
-        util::Log(logDEBUG) << "Resulting path is empty";
+        util::Log(logDEBUG) << "Resulting path is empty or invalid";
         return {};
     }
 
@@ -1223,8 +1232,42 @@ inline std::vector<NodeID> prepareFinalRoute(const detail::RiGraph &g, const det
                        return get(boost::vertex_name, g, v);
                    });
 
-    // TODO: improve final route by replacing costly edges with shortest paths (which
-    // possibly go beyond limiting polygon)
+    // debug stats
+    util::Log(logDEBUG) << [&]
+    {
+        using namespace boost;
+
+        auto roadsLength{0}, routeDist{0};
+
+        // collect road lengths
+        std::unordered_map<NodeID, int> lengths;
+        const auto &facade = g.GetFacade();
+        for (const auto v : make_iterator_range(vertices(g)))
+        {
+            auto node = get(vertex_name, g, v);
+            auto [s, e] = detail::getNodeEndpoints(facade, node);
+            auto len = util::coordinate_calculation::greatCircleDistance(s, e);
+            lengths[node] = len;
+            roadsLength += len;
+        }
+
+        // calc total route distance (approx using node endpoints)
+        routeDist = std::accumulate(route.cbegin(),
+                                    route.cend(),
+                                    0,
+                                    [&](auto total, auto node) { return total + lengths[node]; });
+
+        std::ostringstream ss;
+        ss << "Route inspection stats:" << std::endl;
+        ss << "  Initial number of roads to visit: " << num_vertices(g) << std::endl;
+        ss << "  Number of transitions (edges) to visit: " << num_edges(g) << std::endl;
+        ss << "  Resulting number of visited roads (includes revisits): " << route.size()
+           << std::endl;
+        ss << "  Total roads length: " << roadsLength << std::endl;
+        ss << "  Total route distance: " << routeDist << std::endl;
+
+        return std::move(ss).str();
+    }();
 
     return route;
 }

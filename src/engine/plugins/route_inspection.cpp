@@ -135,7 +135,6 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     const auto &start_phantom = snapped_phantoms.front().front();
     std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, start_phantom, polygon);
-    util::Log(logDEBUG) << "Resulting number of visited roads: " << ri_path.size();
     if (ri_path.size() < 3 || ri_path.front() != ri_path.back())
     {
         return Error("NoRoute", "Couldn't find a valid roundtrip route", result);
