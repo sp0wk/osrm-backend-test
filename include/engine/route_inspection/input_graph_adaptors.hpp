@@ -20,6 +20,11 @@
 namespace osrm::engine::route_inspection
 {
 
+/**
+ * \brief General concept (interface) for input fraph to conform to.
+ *
+ * \tparam G underlying base graph (DataFacade)
+ */
 template <typename G> struct InputGraphConcept
 {
     BOOST_CONCEPT_USAGE(InputGraphConcept)

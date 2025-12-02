@@ -93,7 +93,7 @@ auto makeRiGraph(const NodeBasedDynamicGraph &g, const NodeID start)
 template <typename RIG, typename Vertex = boost::graph_traits<RIG>::vertex_descriptor>
 auto runRouteInspection(RIG &rig, const Vertex start)
 {
-    const auto p = rid::routeInspectionImpl(rig, start);
+    const auto p = ri::routeInspectionImpl(rig, start);
     return ri::prepareFinalRoute(rig, p);
 }
 
@@ -987,11 +987,23 @@ Polygon makePolygon(const std::vector<std::pair<double, double>> &points)
     return polygon;
 }
 
+Polygon makePolygon(const osrm::util::RectangleInt2D bb)
+{
+    using namespace osrm::util;
+    const auto min_lon = toFloating(bb.min_lon).__value;
+    const auto max_lon = toFloating(bb.max_lon).__value;
+    const auto min_lat = toFloating(bb.min_lat).__value;
+    const auto max_lat = toFloating(bb.max_lat).__value;
+    return makePolygon(
+        {{min_lon, min_lat}, {min_lon, max_lat}, {max_lon, max_lat}, {max_lon, min_lat}});
+}
+
 //-------------------------------------------------------------------------------------------------
 
-void test_ri_response_for_simple_search(bool use_json_only_api)
+void test_ri_response_for_small_area(bool use_json_only_api)
 {
     using namespace osrm;
+    using namespace osrm::util;
 
     auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/mld/monaco.osrm", osrm::EngineConfig::Algorithm::MLD);
     const auto location =
@@ -1039,13 +1051,73 @@ void test_ri_response_for_simple_search(bool use_json_only_api)
         BOOST_TEST(wp.IsValid());
     }
 }
-BOOST_AUTO_TEST_CASE(test_ri_response_for_simple_search_old_api)
+BOOST_AUTO_TEST_CASE(test_ri_response_for_small_area_old_api)
 {
-    test_ri_response_for_simple_search(true);
+    test_ri_response_for_small_area(true);
 }
-BOOST_AUTO_TEST_CASE(test_ri_response_for_simple_search_new_api)
+BOOST_AUTO_TEST_CASE(test_ri_response_for_small_area_new_api)
 {
-    test_ri_response_for_simple_search(false);
+    test_ri_response_for_small_area(false);
+}
+
+//-------------------------------------------------------------------------------------------------
+
+void test_ri_response_for_large_monaco_area(bool use_json_only_api)
+{
+    using namespace osrm;
+    using namespace osrm::util;
+
+    auto osrm = getOSRM(OSRM_TEST_DATA_DIR "/mld/monaco.osrm", osrm::EngineConfig::Algorithm::MLD);
+    const auto location = Location(util::FloatLongitude{7.416055}, util::FloatLatitude{43.730143});
+
+    RouteInspectionParameters params;
+    params.coordinates.push_back(location);
+    params.coordinates.push_back(location);
+
+    const RectangleInt2D rect{FloatLongitude(7.406543521200644),
+                              FloatLongitude{7.437528399740683},
+                              FloatLatitude{43.724536932824506},
+                              FloatLatitude{43.7418400686539}};
+    params.polygon = makePolygon(rect);
+
+    json::Object json_result;
+    const auto rc = run_route_inspection_json(osrm, params, json_result, use_json_only_api);
+    BOOST_CHECK(rc == Status::Ok);
+
+    const auto code = std::get<json::String>(json_result.values.at("code")).value;
+    BOOST_CHECK_EQUAL(code, "Ok");
+    BOOST_REQUIRE(code == "Ok");
+
+    const auto &waypoints = std::get<json::Array>(json_result.values.at("waypoints")).values;
+    BOOST_REQUIRE(waypoints.size() >= 2);
+
+    auto const getWaypointCoord = [](const auto &waypoint)
+    {
+        const auto &waypoint_object = std::get<json::Object>(waypoint);
+        const auto location = std::get<json::Array>(waypoint_object.values.at("location")).values;
+        const auto longitude = std::get<json::Number>(location[0]).value;
+        const auto latitude = std::get<json::Number>(location[1]).value;
+        return util::FloatCoordinate{util::FloatLongitude{longitude},
+                                     util::FloatLatitude{latitude}};
+    };
+
+    const auto firstWp = getWaypointCoord(waypoints.front());
+    const auto lastWp = getWaypointCoord(waypoints.back());
+    BOOST_TEST((firstWp == lastWp));
+
+    for (const auto &waypoint : waypoints)
+    {
+        const auto wp = getWaypointCoord(waypoint);
+        BOOST_TEST(wp.IsValid());
+    }
+}
+BOOST_AUTO_TEST_CASE(test_ri_response_for_large_monaco_area_old_api)
+{
+    test_ri_response_for_large_monaco_area(true);
+}
+BOOST_AUTO_TEST_CASE(test_ri_response_for_large_monaco_area_new_api)
+{
+    test_ri_response_for_large_monaco_area(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
