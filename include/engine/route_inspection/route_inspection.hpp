@@ -1040,6 +1040,15 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
     // 4) Fix out-disjoints by connecting them to start using shortest path
     for (const auto u : disjointOutNodes)
     {
+        // check whether this disjoint-out was already fixed
+        for (const auto e : make_iterator_range(out_edges(u, g)))
+        {
+            if (usedEdges.contains(e))
+            {
+                continue; // was fixed already
+            }
+        }
+
         BOOST_ASSERT(revDists[u] != INVALID_EDGE_WEIGHT);
 
         const auto sp = extractPath(revPreds, start, u);
