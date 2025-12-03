@@ -427,6 +427,7 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
     }
 
     // 5) Fix leftover in-disjoints by connecting start to them using shortest path
+    disjointInNodes.erase(start); // safeguard against disjoint start
     for (const auto v : disjointInNodes)
     {
         BOOST_ASSERT(in_degree(v, g) > 1);
