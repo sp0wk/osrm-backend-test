@@ -110,7 +110,9 @@ inline void dropMinorSCCs(RiGraph &g)
     // toRemove)
     for (const auto v : boost::adaptors::reverse(toRemove))
     {
+#ifndef NDEBUG
         g.logVertex(v, "minorScc");
+#endif
         clear_vertex(v, g);
         remove_vertex(v, g);
     }
@@ -296,8 +298,10 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             // all unvisited edges point to already visited nodes
             if (!nextEdge && !visitedNodes.contains(u))
             {
-                // out-disjoint node to be connected later
+#ifndef NDEBUG
                 g.logVertexEnd(u, "disjointOut");
+#endif
+                // out-disjoint node to be connected later
                 disjointOutNodes.emplace(u);
             }
         }
@@ -321,8 +325,10 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             uniqueParent = in_degree(u, g) == 1;
             if (!uniqueParent)
             {
-                // in-disjoint node to be connected later
+#ifndef NDEBUG
                 g.logVertexStart(u, "disjointIn");
+#endif
+                // in-disjoint node to be connected later
                 disjointInNodes.emplace(u);
             }
             circuit.emplace_back(u);
@@ -478,13 +484,15 @@ inline void optimizeRiGraph(RiGraph &g)
 {
     using namespace boost;
 
-    util::Log(logDEBUG) << "[optimizeRiGraph]  Initial number of edges: " << num_edges(g);
+    [[maybe_unused]] const auto initEdgeCount = num_edges(g);
 
     // 1) Preprocessing to prune edges which are not shortest paths
     const auto costlyEdges = collectCostlyEdges(g);
     for (const auto e : costlyEdges)
     {
+#ifndef NDEBUG
         g.logEdge(e, "costly");
+#endif
         remove_edge(e, g);
     }
 
@@ -506,21 +514,26 @@ inline void optimizeRiGraph(RiGraph &g)
             // edge is estimated as not optimal -> remove
             unusedEdges.emplace_back(e);
         }
+#ifndef NDEBUG
         else
         {
             g.logEdge(e, "used");
         }
+#endif
     }
 
     // 4) Actual edge removal
     for (const auto e : unusedEdges)
     {
+#ifndef NDEBUG
         g.logEdge(e, "unused");
+#endif
         remove_edge(e, g);
     }
 
-    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of edges after removing unused edges: "
-                        << num_edges(g);
+    util::Log(logDEBUG)
+        << "[optimizeRiGraph]  Number of edges before/after removing unused edges:  "
+        << initEdgeCount << " vs " << num_edges(g);
 }
 
 // Adds deficit edges to imbalanced graph through solving min-cost flow problem to make graph

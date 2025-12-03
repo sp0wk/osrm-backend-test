@@ -86,8 +86,10 @@ inline std::vector<NodeID> prepareFinalRoute(const RiGraph &g, const Path &path)
                    std::back_inserter(route),
                    [&g](const auto v)
                    {
-                       // extract original NodeID
+#ifndef NDEBUG
                        g.logVertexEnd(v, "final route");
+#endif
+                       // extract original NodeID
                        return get(boost::vertex_name, g, v);
                    });
 
