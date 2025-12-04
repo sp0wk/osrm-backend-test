@@ -588,12 +588,16 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
     // duplicate edges based on flow value
     for (const auto &edgeFlow : mcf)
     {
-        const auto &row = pathMatrix.rows[edgeFlow.sIdx];
-        const auto &col = row.columns[edgeFlow.tIdx];
+        const auto &row = pathMatrix.data[edgeFlow.sIdx];
         for ([[maybe_unused]] const auto reps : util::irange(0U, edgeFlow.flow))
         {
-            const auto &p = col.path.path;
+            const auto s = pathMatrix.sources[edgeFlow.sIdx];
+            const auto t = pathMatrix.targets[edgeFlow.tIdx];
+
+            BOOST_ASSERT(row.dists[t] != INVALID_EDGE_WEIGHT);
+            const auto p = extractPath(row.preds, s, t);
             BOOST_ASSERT(p.size() > 1);
+
             for (auto it = std::next(p.cbegin()); it != p.cend(); ++it)
             {
                 const auto u = *std::prev(it);

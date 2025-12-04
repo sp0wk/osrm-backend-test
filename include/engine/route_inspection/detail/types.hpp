@@ -1,6 +1,8 @@
 #ifndef OSRM_ROUTE_INSPECTION_TYPES_HPP
 #define OSRM_ROUTE_INSPECTION_TYPES_HPP
 
+#include "util/exception.hpp"
+#include "util/integer_range.hpp"
 #include "util/typedefs.hpp"
 
 #include <boost/graph/adjacency_list.hpp>
@@ -55,19 +57,34 @@ struct ShortestPath
 // Represents shortest paths between all sources/targets
 struct PathMatrix
 {
-    struct Column
+    // 1-to-all shortest paths
+    struct Data
     {
-        Vertex target;
-        ShortestPath path;
+        std::vector<Vertex> preds;
+        std::vector<EdgeWeight> dists;
     };
 
-    struct Row
+    void initialize(const std::size_t sCount, const std::size_t tCount)
     {
-        Vertex source;
-        std::vector<Column> columns;
-    };
+        // sanity check
+        if (sCount * tCount > 100000000)
+        {
+            throw util::exception{"Unexpectedly large PathMatrix (max 100m entries)"};
+        }
 
-    std::vector<Row> rows;
+        sources.resize(sCount);
+        targets.resize(tCount);
+        data.resize(sCount);
+        for (const auto i : util::irange<std::size_t>(0, sCount))
+        {
+            data[i].preds.resize(tCount);
+            data[i].dists.resize(tCount);
+        }
+    }
+
+    std::vector<Data> data; // 1 entry per source
+    std::vector<Vertex> sources;
+    std::vector<Vertex> targets;
 };
 
 // Represents flow between two vertices in PathMatrix

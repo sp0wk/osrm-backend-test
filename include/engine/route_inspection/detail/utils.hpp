@@ -267,8 +267,8 @@ inline ShortestPath shortestPath(const RiGraphBase &g, const Vertex s, const Ver
 }
 
 // Finds shortest paths from a source vertex to all target vertices
-inline std::vector<ShortestPath>
-oneToMany(const RiGraphBase &g, const Vertex source, const std::vector<Vertex> &targets)
+inline std::pair<std::vector<Vertex>, std::vector<EdgeWeight>> oneToMany(const RiGraphBase &g,
+                                                                         const Vertex source)
 {
     // prepare maps for predecessors and distances
     std::vector<Vertex> preds(num_vertices(g));
@@ -277,24 +277,7 @@ oneToMany(const RiGraphBase &g, const Vertex source, const std::vector<Vertex> &
     // calculate shortest paths from source to all vertices
     shortestPaths(g, source, preds, dists);
 
-    // extract paths for all targets
-    std::vector<ShortestPath> paths;
-    paths.reserve(targets.size());
-    for (auto t : targets)
-    {
-        auto &sp = paths.emplace_back();
-        const auto cost = dists[t];
-        if (cost == INVALID_EDGE_WEIGHT)
-        {
-            // no path found
-            util::Log(logDEBUG) << "No shortest path found for s=" << source << ", t=" << t;
-            continue;
-        }
-        sp.path = extractPath(preds, source, t);
-        sp.cost = cost;
-    }
-
-    return paths;
+    return std::make_pair(std::move(preds), std::move(dists));
 }
 
 // Finds shortest paths between all sources and targets
@@ -304,13 +287,11 @@ inline PathMatrix manyToMany(const RiGraphBase &g,
 {
     PathMatrix m;
     // allocate matrix
-    m.rows.resize(sources.size());
-    for (const auto &[idx, s] : boost::adaptors::index(sources))
-    {
-        auto &row = m.rows[idx];
-        row.source = s;
-        row.columns.resize(targets.size());
-    }
+    m.initialize(sources.size(), targets.size());
+    m.sources = sources;
+    m.targets = targets;
+
+    util::Log(logDEBUG) << "Running manyToMany shortest paths search...";
 
     // parallelize multiple oneToMany calls
     tbb::parallel_for(tbb::blocked_range<size_t>(0UL, sources.size()),
@@ -319,16 +300,12 @@ inline PathMatrix manyToMany(const RiGraphBase &g,
                           for (auto sIdx = r.begin(); sIdx != r.end(); ++sIdx)
                           {
                               // calc 1-to-m routes
-                              auto paths = oneToMany(g, sources[sIdx], targets);
-                              BOOST_ASSERT(targets.size() == paths.size());
+                              auto paths = oneToMany(g, sources[sIdx]);
+                              BOOST_ASSERT(paths.first.size() == paths.second.size());
                               // populate matrix
-                              auto &row = m.rows[sIdx];
-                              for (const auto &[tIdx, t] : boost::adaptors::index(targets))
-                              {
-                                  auto &col = row.columns[tIdx];
-                                  col.target = t;
-                                  col.path = std::move(paths[tIdx]);
-                              }
+                              auto &data = m.data[sIdx];
+                              data.preds = std::move(paths.first);
+                              data.dists = std::move(paths.second);
                           }
                       });
 
