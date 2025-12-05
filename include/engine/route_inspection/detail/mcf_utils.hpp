@@ -113,8 +113,20 @@ inline auto buildMcfGraph(McfGraph &g,
     const auto superSource = addVertex(-1);
     const auto superSink = addVertex(-1);
 
-    std::unordered_map<Vertex, V> sinks; // to check already added sinks
+    // create/add sink nodes
+    std::unordered_map<Vertex, V> sinks; // to get already added sinks
     sinks.reserve(pathMatrix.targets.size());
+    for (const auto &[tIdx, t] : adaptors::index(pathMatrix.targets))
+    {
+        // insert new sink node and connect it to super-sink
+        const auto tv = addVertex(tIdx);
+        sinks[t] = tv;
+        // connect new deficit node with the super-sink
+        const auto cap = std::abs(deltas[t]);
+        addEdge(tv, superSink, cap, 0);
+    }
+
+    // create/add source nodes and source->sink edges
     for (const auto &[sIdx, data] : adaptors::index(pathMatrix.data))
     {
         const Vertex s = pathMatrix.sources[sIdx];
@@ -123,32 +135,17 @@ inline auto buildMcfGraph(McfGraph &g,
         const auto capacity = std::abs(deltas[pathMatrix.sources[sIdx]]);
         addEdge(superSource, sv, capacity, 0);
 
-        for (const auto &[tIdx, t] : adaptors::index(pathMatrix.targets))
+        // connect surplus node to deficit nodes
+        for (const auto t : pathMatrix.targets)
         {
-            V tv = McfGraph::null_vertex();
-            if (const auto it = sinks.find(t); it != sinks.cend())
-            {
-                // sink node was already inserted
-                tv = it->second;
-                BOOST_ASSERT(get(vertex_name, g, tv) == static_cast<std::size_t>(tIdx));
-            }
-            else
-            {
-                // insert new sink node and connect it to super-sink
-                tv = addVertex(tIdx);
-                sinks[t] = tv;
-                // connect new deficit node with the sink
-                const auto cap = std::abs(deltas[t]);
-                addEdge(tv, superSink, cap, 0);
-            }
-            // connect surplus node to deficit node if path exists
+            const auto tv = sinks[t];
             if (const auto cost = data.dists[t]; cost != INVALID_EDGE_WEIGHT)
             {
                 addEdge(sv, tv, maxCapacity, cost.__value);
             }
             else
             {
-                util::Log(logDEBUG) << "MCF: skipping unreachable path " << s << " -> " << t;
+                util::Log(logWARNING) << "MCF: skipping unreachable path " << s << " -> " << t;
             }
         }
     }
@@ -176,10 +173,10 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
                  (pathMatrix.sources.size() == pathMatrix.data.size()));
 
     // reasonable time feasibility check
-    if (pathMatrix.sources.size() * pathMatrix.targets.size() > 10000)
+    if (const auto n = pathMatrix.sources.size() * pathMatrix.targets.size(); n > 1000)
     {
-        throw util::exception{
-            "Unexpectedly large number of sources/targets for MCF solver (max 10000)"};
+        util::Log(logWARNING) << "Number of sources/targets for MCF solver is too high (s*t=" << n
+                              << " > 1000). Calculation might be slow...";
     }
 
     // build min-cost flow graph
