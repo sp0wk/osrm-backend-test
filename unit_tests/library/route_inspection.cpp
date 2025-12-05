@@ -94,7 +94,8 @@ template <typename RIG, typename Vertex = boost::graph_traits<RIG>::vertex_descr
 auto runRouteInspection(RIG &rig, const Vertex start)
 {
     const auto p = ri::routeInspectionImpl(rig, start);
-    return ri::prepareFinalRoute(rig, p);
+    const auto res = ri::prepareFinalRoute(rig, p);
+    return res.nodes;
 }
 
 template <typename G, typename V> void testEdge(const G &g, V u, V v, int expectedWeight)

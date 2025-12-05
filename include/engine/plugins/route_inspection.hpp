@@ -4,10 +4,10 @@
 #include "engine/api/route_inspection_parameters.hpp"
 #include "engine/datafacade.hpp"
 #include "engine/plugins/plugin_base.hpp"
+#include "engine/route_inspection/route_inspection.hpp"
 #include "engine/routing_algorithms.hpp"
 
 #include <cstdlib>
-#include <vector>
 
 namespace osrm::engine::plugins
 {
@@ -18,9 +18,11 @@ class RouteInspectionPlugin final : public BasePlugin
     const int max_ri_polygon_points;
     const int max_ri_polygon_area_km_sqr;
 
-    InternalRouteResult
-    ComputeRoute(const RoutingAlgorithmsInterface &algorithms,
-                 const std::vector<PhantomNodeCandidates> &waypoint_candidates) const;
+    template <typename AlgorithmT>
+    InternalRouteResult BuildRoute(const DataFacade<AlgorithmT> &facade,
+                                   const RoutingAlgorithmsInterface &algorithms,
+                                   const PhantomEndpointCandidates &endpoints,
+                                   const route_inspection::RouteInspectionResult &ri_result) const;
 
   public:
     explicit RouteInspectionPlugin(const int max_ri_polygon_points_,

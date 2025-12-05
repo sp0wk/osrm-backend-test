@@ -1,12 +1,11 @@
 #include "engine/plugins/route_inspection.hpp"
 
-#include "engine/algorithm.hpp"
 #include "engine/api/route_inspection_api.hpp"
 #include "engine/api/route_inspection_parameters.hpp"
 #include "engine/route_inspection/route_inspection.hpp"
+#include "engine/routing_algorithms/routing_base.hpp"
 
 #include "util/coordinate_calculation.hpp"
-#include "util/integer_range.hpp"
 #include "util/polygon.hpp"
 
 #include <boost/assert.hpp>
@@ -23,13 +22,21 @@ namespace osrm::engine::plugins
 // given the node order in which to visit, compute the actual route (with geometry, travel time and
 // so on) and return the result
 // NOTE: Final route may freely go outside polygon if it's more optimal to do so
-InternalRouteResult RouteInspectionPlugin::ComputeRoute(
-    const RoutingAlgorithmsInterface &algorithms,
-    const std::vector<PhantomNodeCandidates> &waypoint_candidates) const
+template <typename AlgorithmT>
+InternalRouteResult
+RouteInspectionPlugin::BuildRoute(const DataFacade<AlgorithmT> &facade,
+                                  const RoutingAlgorithmsInterface & /* algorithms */,
+                                  const PhantomEndpointCandidates &endpoints,
+                                  const route_inspection::RouteInspectionResult &ri_result) const
 {
-    auto min_route = algorithms.ShortestPathSearch(waypoint_candidates, {false});
-    BOOST_ASSERT_MSG(min_route.shortest_path_weight < INVALID_EDGE_WEIGHT, "unroutable route");
-    return min_route;
+    BOOST_ASSERT(ri_result.IsValid());
+
+    const auto route = routing_algorithms::extractRoute(
+        facade, ri_result.cost, endpoints, ri_result.nodes, ri_result.edges);
+
+    // TODO: replace costly edges with actual shortest paths
+
+    return route;
 }
 
 template <typename AlgorithmT>
@@ -139,41 +146,17 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     const auto snapped_phantoms = SnapPhantomNodes(std::move(phantom_node_pairs));
     BOOST_ASSERT(snapped_phantoms.size() == parameters.coordinates.size());
+    const PhantomEndpointCandidates endpoints{snapped_phantoms.front(), snapped_phantoms.back()};
 
-    const auto &start_phantom = snapped_phantoms.front().front();
-    std::vector<NodeID> ri_path = route_inspection::routeInspection(facade, start_phantom, polygon);
-    if (ri_path.size() < 3 || ri_path.front() != ri_path.back())
+    const auto &start_phantom = endpoints.source_phantoms.front();
+    const auto ri_result = route_inspection::routeInspection(facade, start_phantom, polygon);
+    if (!ri_result.IsValid())
     {
         return Error("NoRoute", "Couldn't find a valid roundtrip route", result);
     }
 
-    // TODO rework
-    api::RouteInspectionParameters ext_params = parameters;
-    // prepare all coords
-    ext_params.coordinates.pop_back();
-    for (const auto i : util::irange<std::size_t>(1UL, ri_path.size() - 1))
-    {
-        const auto node = ri_path[i];
-        const auto [_, c] = route_inspection::detail::getNodeEndpoints(facade, node);
-        BOOST_ASSERT(c.IsValid());
-        ext_params.coordinates.emplace_back(c);
-    }
-    ext_params.coordinates.emplace_back(ext_params.coordinates.front());
-
-    // get phantoms
-    auto ext_phantom_node_pairs = GetPhantomNodes(facade, ext_params);
-    if (ext_phantom_node_pairs.size() != ext_params.coordinates.size())
-    {
-        return Error("NoSegment",
-                     MissingPhantomErrorMessage(ext_phantom_node_pairs, ext_params.coordinates),
-                     result);
-    }
-
-    const auto ext_snapped_phantoms = SnapPhantomNodes(std::move(ext_phantom_node_pairs));
-    BOOST_ASSERT(ext_snapped_phantoms.size() == ext_params.coordinates.size());
-
     // get the route when visiting all nodes in optimized order
-    InternalRouteResult route = ComputeRoute(algorithms, ext_snapped_phantoms);
+    InternalRouteResult route = BuildRoute(facade, algorithms, endpoints, ri_result);
     if (!route.is_valid())
     {
         return Error("NoRoute",
@@ -183,8 +166,8 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 
     // get api response
     const std::vector<InternalRouteResult> routes = {route};
-    const api::RouteInspectionAPI ri_api{facade, ext_params};
-    ri_api.MakeResponse(routes, ext_snapped_phantoms, result);
+    const api::RouteInspectionAPI ri_api{facade, parameters};
+    ri_api.MakeResponse(routes, snapped_phantoms, result);
 
     return Status::Ok;
 }
@@ -192,6 +175,13 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
 // Explicit instantiations for routing algorithms
 
 // CH
+
+template InternalRouteResult RouteInspectionPlugin::BuildRoute<routing_algorithms::ch::Algorithm>(
+    const DataFacade<routing_algorithms::ch::Algorithm> &,
+    const RoutingAlgorithmsInterface &,
+    const PhantomEndpointCandidates &,
+    const route_inspection::RouteInspectionResult &) const;
+
 template Status RouteInspectionPlugin::HandleRequest<routing_algorithms::ch::Algorithm>(
     const DataFacade<routing_algorithms::ch::Algorithm> &,
     const RoutingAlgorithmsInterface &,
@@ -199,6 +189,13 @@ template Status RouteInspectionPlugin::HandleRequest<routing_algorithms::ch::Alg
     osrm::engine::api::ResultT &) const;
 
 // MLD
+
+template InternalRouteResult RouteInspectionPlugin::BuildRoute<routing_algorithms::mld::Algorithm>(
+    const DataFacade<routing_algorithms::mld::Algorithm> &,
+    const RoutingAlgorithmsInterface &,
+    const PhantomEndpointCandidates &,
+    const route_inspection::RouteInspectionResult &) const;
+
 template Status RouteInspectionPlugin::HandleRequest<routing_algorithms::mld::Algorithm>(
     const DataFacade<routing_algorithms::mld::Algorithm> &,
     const RoutingAlgorithmsInterface &,
