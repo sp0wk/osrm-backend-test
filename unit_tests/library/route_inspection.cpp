@@ -165,11 +165,11 @@ BOOST_AUTO_TEST_CASE(test_shortest_path)
     {
         g.GetEdgeData(e13).weight = EdgeWeight{100};
         auto rig = makeRiGraph<false>(g, v0);
-        const auto paths = rid::oneToMany(rig, v0, {v3});
+        const auto [preds, dists] = rid::oneToMany(rig, v0);
+        BOOST_REQUIRE(!preds.empty() && !dists.empty());
 
-        BOOST_REQUIRE(paths.size() == 1);
-        BOOST_TEST(paths[0].cost == EdgeWeight{30});
-        const auto &path = paths[0].path;
+        BOOST_TEST(dists[v3] == EdgeWeight{30});
+        const auto path = rid::extractPath(preds, v0, v3);
         BOOST_REQUIRE(path.size() == 4);
         BOOST_TEST(path[0] == v0);
         BOOST_TEST(path[1] == v1);
@@ -181,11 +181,11 @@ BOOST_AUTO_TEST_CASE(test_shortest_path)
     {
         g.GetEdgeData(e13).weight = EdgeWeight{1};
         auto rig = makeRiGraph<false>(g, v0);
-        const auto paths = rid::oneToMany(rig, v0, {v3});
+        const auto [preds, dists] = rid::oneToMany(rig, v0);
+        BOOST_REQUIRE(!preds.empty() && !dists.empty());
 
-        BOOST_REQUIRE(paths.size() == 1);
-        BOOST_TEST(paths[0].cost == EdgeWeight{11});
-        const auto &path = paths[0].path;
+        BOOST_TEST(dists[v3] == EdgeWeight{11});
+        const auto path = rid::extractPath(preds, v0, v3);
         BOOST_REQUIRE(path.size() == 3);
         BOOST_TEST(path[0] == v0);
         BOOST_TEST(path[1] == v1);
