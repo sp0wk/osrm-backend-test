@@ -298,11 +298,25 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             // all unvisited edges point to already visited nodes
             if (!nextEdge && !visitedNodes.contains(u))
             {
+                // check if disjoint can be connected already
+                const auto v = circuit.back();
+                bool connectable{false};
+                for (const auto e : uEdges)
+                {
+                    if (target(e, g) == v)
+                    {
+                        connectable = true;
+                        break;
+                    }
+                }
+                if (!connectable)
+                {
 #ifndef NDEBUG
-                g.logVertexEnd(u, "disjointOut");
+                    g.logVertex(u, "disjointOut");
 #endif
-                // out-disjoint node to be connected later
-                disjointOutNodes.emplace(u);
+                    // out-disjoint node to be connected later
+                    disjointOutNodes.emplace(u);
+                }
             }
         }
 
@@ -326,7 +340,7 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             if (!uniqueParent)
             {
 #ifndef NDEBUG
-                g.logVertexStart(u, "disjointIn");
+                g.logVertex(u, "disjointIn");
 #endif
                 // in-disjoint node to be connected later
                 disjointInNodes.emplace(u);
