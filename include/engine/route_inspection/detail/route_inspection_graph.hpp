@@ -24,6 +24,7 @@
 #include <queue>
 #include <stack>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -352,7 +353,7 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
 
     using ResultSet = std::unordered_set<Edge, EdgeHash>;
 
-    ResultSet usedEdges{0, EdgeHash{g}};
+    ResultSet usedEdges{0, EdgeHash{&g}};
     usedEdges.reserve(num_edges(g));
 
     // 1) Get DFS circuit with disjoints

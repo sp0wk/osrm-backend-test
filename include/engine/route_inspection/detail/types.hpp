@@ -28,13 +28,14 @@ struct EdgeHash
 {
     std::size_t operator()(const Edge &e) const noexcept
     {
+        BOOST_ASSERT(g != nullptr);
         std::size_t seed = 0;
-        boost::hash_combine(seed, source(e, g));
-        boost::hash_combine(seed, target(e, g));
+        boost::hash_combine(seed, source(e, *g));
+        boost::hash_combine(seed, target(e, *g));
         return seed;
     }
 
-    const RiGraphBase &g;
+    const RiGraphBase *g{nullptr};
 };
 
 // Represents a sequence of vertices
