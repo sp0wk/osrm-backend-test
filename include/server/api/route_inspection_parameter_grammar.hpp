@@ -40,8 +40,15 @@ struct RouteInspectionParametersGrammar final : public RouteParametersGrammar<It
             (polygon_point_rule %
              ';')[ph::bind(&engine::api::RouteInspectionParameters::polygon, qi::_r1) = qi::_1];
 
+        residential_roads_rule =
+            qi::lit("allow-residential-roads=") >
+            qi::bool_[ph::bind(&engine::api::RouteInspectionParameters::allowResidentialRoads,
+                               qi::_r1) = qi::_1];
+
         root_rule = BaseGrammar::query_rule(qi::_r1) > BaseGrammar::format_rule(qi::_r1) >
-                    -('?' > (polygon_rule(qi::_r1) | BaseGrammar::base_rule(qi::_r1)) % '&');
+                    -('?' > (polygon_rule(qi::_r1) | residential_roads_rule(qi::_r1) |
+                             BaseGrammar::base_rule(qi::_r1)) %
+                                '&');
     }
 
   private:
@@ -49,6 +56,7 @@ struct RouteInspectionParametersGrammar final : public RouteParametersGrammar<It
 
     qi::rule<Iterator, osrm::util::Coordinate()> polygon_point_rule;
     qi::rule<Iterator, Signature> polygon_rule;
+    qi::rule<Iterator, Signature> residential_roads_rule;
     qi::rule<Iterator, Signature> root_rule;
 };
 } // namespace osrm::server::api

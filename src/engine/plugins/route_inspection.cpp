@@ -149,7 +149,8 @@ Status RouteInspectionPlugin::HandleRequest(const DataFacade<AlgorithmT> &facade
     const PhantomEndpointCandidates endpoints{snapped_phantoms.front(), snapped_phantoms.back()};
 
     const auto &start_phantom = endpoints.source_phantoms.front();
-    const auto ri_result = route_inspection::routeInspection(facade, start_phantom, polygon);
+    const auto ri_result = route_inspection::routeInspection(
+        facade, start_phantom, polygon, parameters.allowResidentialRoads);
     if (!ri_result.IsValid())
     {
         return Error("NoRoute", "Couldn't find a valid roundtrip route", result);

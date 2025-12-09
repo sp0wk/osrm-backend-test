@@ -57,6 +57,7 @@ struct RouteInspectionParameters : public RouteParameters
     }
 
     Polygon polygon;
+    bool allowResidentialRoads{false};
 
     bool IsValid() const { return RouteParameters::IsValid(); }
 };

@@ -188,7 +188,8 @@ inline RouteInspectionResult prepareFinalRoute(const RiGraph &g, const Path &pat
 template <typename Algorithm>
 RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
                                       const PhantomNode &start,
-                                      const util::Polygon &polygon)
+                                      const util::Polygon &polygon,
+                                      const bool allowResidentialRoads = false)
 {
     using namespace util;
     using namespace detail;
@@ -207,7 +208,11 @@ RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
 
     if (!polygon.empty())
     {
-        const PolygonFilter f{facade, polygon};
+        PolygonFilter f{facade, polygon};
+        if (allowResidentialRoads)
+        {
+            f.disallowedRoadClasses.erase("residential");
+        }
         rig = buildRiGraph(baseGraph, s, f);
     }
     else
