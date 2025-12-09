@@ -130,12 +130,30 @@ template <typename DataFacade> struct PolygonFilter
 {
     bool operator()(const EdgeID &e) const
     {
-        const auto [_, p] = getNodeEndpoints(facade, facade.GetTarget(e));
-        return polygon.Contains(p);
+        const auto node = facade.GetTarget(e);
+        const auto [p0, p] = getNodeEndpoints(facade, node);
+        if (polygon.Contains(p))
+        {
+            // filter out special road classes
+            const auto roadClasses = facade.GetClasses(facade.GetClassData(node));
+            for (const auto &rc : roadClasses)
+            {
+                if (disallowedRoadClasses.contains(rc))
+                {
+                    util::Log(logDEBUG)
+                        << "Filtering node " << node << " with disallowed road class: " << rc;
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     const DataFacade &facade;
     const util::Polygon &polygon;
+    std::unordered_set<std::string> disallowedRoadClasses{
+        "restricted", "ferry", "residential", "service", "unclassified"};
 };
 
 // Builds a RI (route inspection) compatible node-based directed subgraph using following rules:

@@ -349,6 +349,21 @@ function WayHandlers.classes(profile,way,result,data)
         result.forward_classes["motorway"] = true
         result.backward_classes["motorway"] = true
     end
+
+    if allowed_classes["residential"] and (data.highway == "residential") then
+        result.forward_classes["residential"] = true
+        result.backward_classes["residential"] = true
+    end
+
+    if allowed_classes["service"] and (data.highway == "service") then
+        result.forward_classes["service"] = true
+        result.backward_classes["service"] = true
+    end
+
+    if allowed_classes["unclassified"] and (data.highway == "unclassified") then
+        result.forward_classes["unclassified"] = true
+        result.backward_classes["unclassified"] = true
+    end
 end
 
 -- reduce speed on bad surfaces
