@@ -173,10 +173,17 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
                  (pathMatrix.sources.size() == pathMatrix.data.size()));
 
     // reasonable time feasibility check
-    if (const auto n = pathMatrix.sources.size() * pathMatrix.targets.size(); n > 1000)
+    static constexpr const auto MCF_LIMIT = 1000;
+    if (const auto n = pathMatrix.sources.size() + pathMatrix.targets.size(); n > MCF_LIMIT)
     {
-        util::Log(logWARNING) << "Number of sources/targets for MCF solver is too high (s*t=" << n
+        util::Log(logWARNING) << "Number of sources/targets for MCF solver is too high (s+t=" << n
                               << " > 1000). Calculation might be slow...";
+        if (n > MCF_LIMIT * 2)
+        {
+            util::Log(logWARNING) << "Number of sources/targets for MCF solver exceeds reasonable "
+                                     "threshold, aborting...";
+            return {};
+        }
     }
 
     // build min-cost flow graph
