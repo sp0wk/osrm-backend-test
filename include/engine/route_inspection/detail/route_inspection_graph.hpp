@@ -355,9 +355,6 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             // all unvisited edges point to already visited nodes
             if (!nextEdge && !visitedNodes.contains(u))
             {
-#ifndef NDEBUG
-                g.logVertex(u, "disjointOut");
-#endif
                 // out-disjoint node to be connected later
                 disjointOutNodes.emplace(u);
             }
@@ -382,9 +379,6 @@ inline auto getDfsCircuitGreedy(const RiGraph &g, const Vertex start)
             uniqueParent = in_degree(u, g) == 1;
             if (!uniqueParent)
             {
-#ifndef NDEBUG
-                g.logVertex(u, "disjointIn");
-#endif
                 // in-disjoint node to be connected later
                 disjointInNodes.emplace(u);
             }
@@ -461,26 +455,38 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
             }
         }
 
+#ifndef NDEBUG
+        g.logVertex(u, "disjointOut");
+#endif
+
         BOOST_ASSERT(revDists[u] != INVALID_EDGE_WEIGHT);
 
-        const auto sp = extractPath(revPreds, start, u);
-        BOOST_ASSERT(sp.size() >= 2);
+        auto v = revPreds[u];
+        const auto [e, exists] = edge(u, v, g);
+        BOOST_ASSERT(exists);
+        usedEdges.emplace(e);
 
-        // iterate in reverse due to reversed graph
-        auto it = sp.crbegin();
-        ++it;
-        for (; it != sp.crend(); ++it)
+        if (disjointInNodes.contains(v))
         {
-            const auto from = *std::prev(it);
-            const auto to = *it;
-            const auto [e, exists] = edge(from, to, g);
-            BOOST_ASSERT(exists);
-            usedEdges.emplace(e);
-            // fix in-disjoint with this edge unless it's a disjoint->disjoint transition which is
-            // disallowed to prevent cycles
-            if (!disjointOutNodes.contains(from))
+            // possible cycle -> find/add exit edge
+            while (v != start)
             {
-                disjointInNodes.erase(to);
+                auto u = v;
+                v = revPreds[v];
+                const auto [e, exists] = edge(u, v, g);
+                BOOST_ASSERT(exists);
+                if (!usedEdges.contains(e))
+                {
+                    // found exit edge
+                    usedEdges.emplace(e);
+                    // fix in-disjoint with this edge unless it's a disjoint->disjoint transition
+                    // which is disallowed to prevent cycles
+                    if (!disjointOutNodes.contains(u))
+                    {
+                        disjointInNodes.erase(v);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -492,19 +498,14 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
         BOOST_ASSERT(in_degree(v, g) > 1);
         BOOST_ASSERT(dists[v] != INVALID_EDGE_WEIGHT);
 
-        const auto sp = extractPath(preds, start, v);
-        BOOST_ASSERT(sp.size() >= 2);
+#ifndef NDEBUG
+        g.logVertex(v, "disjointIn");
+#endif
 
-        auto it = sp.cbegin();
-        ++it;
-        for (; it != sp.cend(); ++it)
-        {
-            const auto from = *std::prev(it);
-            const auto to = *it;
-            const auto [e, exists] = edge(from, to, g);
-            BOOST_ASSERT(exists);
-            usedEdges.emplace(e);
-        }
+        const auto u = preds[v];
+        const auto [e, exists] = edge(u, v, g);
+        BOOST_ASSERT(exists);
+        usedEdges.emplace(e);
     }
 
     return usedEdges;
@@ -557,8 +558,8 @@ inline void optimizeRiGraph(RiGraph &g)
     }
 
     BOOST_ASSERT(isValidGraph(g));
-    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of edges after removing costly edges: "
-                        << num_edges(g);
+    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of removed costly edges: "
+                        << costlyEdges.size();
 
     // 2) Collect optimal edges
     const Vertex start{0};
@@ -590,6 +591,9 @@ inline void optimizeRiGraph(RiGraph &g)
 #endif
         remove_edge(e, g);
     }
+
+    // filter out unresolved cycles
+    dropMinorSCCs(g);
 
     util::Log(logDEBUG)
         << "[optimizeRiGraph]  Number of edges before/after removing unused edges:  "

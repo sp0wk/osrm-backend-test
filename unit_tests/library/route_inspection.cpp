@@ -229,7 +229,7 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
     // Nodes are EBG nodes
     //  ____________
     // ↓            |
-    // 0 <--> 1 --> 2 <--> 3
+    // 0 <--> 1 --> 3 <--> 2
     // |      ↑__________/ ↑
     // |___________________|
 
@@ -241,13 +241,13 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
     auto v2 = g.InsertNode();
     auto v3 = g.InsertNode();
     g.InsertEdge(v0, v1, w);
-    g.InsertEdge(v0, v3, w);
+    g.InsertEdge(v0, v2, w);
     g.InsertEdge(v1, v0, w);
-    g.InsertEdge(v1, v2, w);
-    g.InsertEdge(v2, v0, w);
+    g.InsertEdge(v1, v3, w);
+    g.InsertEdge(v2, v1, w);
     g.InsertEdge(v2, v3, w);
-    g.InsertEdge(v3, v1, w);
     g.InsertEdge(v3, v2, w);
+    g.InsertEdge(v3, v0, w);
 
     auto rig = makeRiGraph<false>(g, v0);
     BOOST_REQUIRE(rid::isEulerianGraph(rig));
@@ -257,11 +257,11 @@ BOOST_AUTO_TEST_CASE(test_already_eulerian_graph)
     BOOST_TEST(path[0] == v0);
     BOOST_TEST(path[1] == v1);
     BOOST_TEST(path[2] == v0);
-    BOOST_TEST(path[3] == v3);
+    BOOST_TEST(path[3] == v2);
     BOOST_TEST(path[4] == v1);
-    BOOST_TEST(path[5] == v2);
-    BOOST_TEST(path[6] == v3);
-    BOOST_TEST(path[7] == v2);
+    BOOST_TEST(path[5] == v3);
+    BOOST_TEST(path[6] == v2);
+    BOOST_TEST(path[7] == v3);
     BOOST_TEST(path[8] == v0);
 }
 
@@ -771,7 +771,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     auto rig = makeRiGraph(g, v0);
     const auto path = runRouteInspection(rig, 0);
 
-    // TODO fux by removing unused shortcuts
     BOOST_REQUIRE(path.size() == 11);
     BOOST_TEST(path[0] == 0);
     BOOST_TEST(path[1] == 1);
@@ -784,6 +783,70 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_deadend)
     BOOST_TEST(path[8] == 7);
     BOOST_TEST(path[9] == 8);
     BOOST_TEST(path[10] == 0);
+}
+
+BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_use_shortcut)
+{
+    // Input EBG:
+    //
+    //   6     3
+    //   o---->o----->o 5
+    //   ↑     ↑      |\_
+    //   |     |      |  \_→ o 7
+    // 4 o     o 1    |      |
+    //   ↑     ↑      |  ___/
+    //   |     |      ↓ /
+    // 2 o<----|      o 8
+    //         ↑      ↓
+    //       0 o<-----o 9
+
+    NodeBasedDynamicGraph g;
+
+    auto w = weight(2);
+    auto v0 = g.InsertNode();
+    auto v1 = g.InsertNode();
+    auto v2 = g.InsertNode();
+    auto v3 = g.InsertNode();
+    auto v4 = g.InsertNode();
+    auto v5 = g.InsertNode();
+    auto v6 = g.InsertNode();
+    auto v7 = g.InsertNode();
+    auto v8 = g.InsertNode();
+    auto v9 = g.InsertNode();
+    g.InsertEdge(v0, v1, w);
+    g.InsertEdge(v1, v2, weight(5));
+    g.InsertEdge(v1, v3, w);
+    g.InsertEdge(v2, v4, w);
+    g.InsertEdge(v3, v5, w);
+    g.InsertEdge(v4, v6, w);
+    g.InsertEdge(v5, v7, weight(10));
+    g.InsertEdge(v5, v8, weight(20));
+    g.InsertEdge(v6, v1, w);
+    g.InsertEdge(v7, v8, weight(12));
+    g.InsertEdge(v8, v9, w);
+    g.InsertEdge(v9, v0, w);
+
+    auto rig = makeRiGraph(g, v0);
+    const auto path = runRouteInspection(rig, 0);
+
+    // TODO: optimize path by allowing 5->8 shortcut
+    BOOST_REQUIRE(path.size() == 16);
+    BOOST_TEST(path[0] == 0);
+    BOOST_TEST(path[1] == 1);
+    BOOST_TEST(path[2] == 3);
+    BOOST_TEST(path[3] == 5);
+    BOOST_TEST(path[4] == 7);
+    BOOST_TEST(path[5] == 8);
+    BOOST_TEST(path[6] == 9);
+    BOOST_TEST(path[7] == 0);
+    BOOST_TEST(path[8] == 2);
+    BOOST_TEST(path[9] == 4);
+    BOOST_TEST(path[10] == 6);
+    BOOST_TEST(path[11] == 3);
+    BOOST_TEST(path[12] == 5);
+    BOOST_TEST(path[13] == 8);
+    BOOST_TEST(path[14] == 9);
+    BOOST_TEST(path[15] == 0);
 }
 
 BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_many_disjoints)
@@ -1080,6 +1143,7 @@ void test_ri_response_for_large_monaco_area(bool use_json_only_api)
                               FloatLatitude{43.724536932824506},
                               FloatLatitude{43.7418400686539}};
     params.polygon = makePolygon(rect);
+    params.allowResidentialRoads = true;
 
     json::Object json_result;
     const auto rc = run_route_inspection_json(osrm, params, json_result, use_json_only_api);
