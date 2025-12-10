@@ -208,12 +208,10 @@ RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
 
     if (!polygon.empty())
     {
-        PolygonFilter f{facade, polygon};
-        if (allowResidentialRoads)
-        {
-            f.disallowedRoadClasses.erase("residential");
-        }
-        rig = buildRiGraph(baseGraph, s, f);
+        RoadClassFilter nodeFilter{facade};
+        nodeFilter.setResidentialRoads(allowResidentialRoads);
+        const PolygonFilter edgeFilter{facade, polygon};
+        rig = buildRiGraph(baseGraph, s, nodeFilter, edgeFilter);
     }
     else
     {

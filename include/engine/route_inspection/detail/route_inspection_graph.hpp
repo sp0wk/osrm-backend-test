@@ -125,35 +125,54 @@ struct NoFilter
     template <typename... Args> constexpr bool operator()(Args &&...) const { return true; }
 };
 
+// Input graph edge filter based on the road class
+template <typename DataFacade> struct RoadClassFilter
+{
+    bool operator()(const NodeID &node) const
+    {
+        // filter out special road classes
+        const auto roadClasses = facade.GetClasses(facade.GetClassData(node));
+        for (const auto &rc : roadClasses)
+        {
+            if (disallowedRoadClasses.contains(rc))
+            {
+                util::Log(logDEBUG)
+                    << "Filtering node " << node << " with disallowed road class: " << rc;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void setResidentialRoads(const bool allow)
+    {
+        if (allow)
+        {
+            disallowedRoadClasses.erase("residential");
+        }
+        else
+        {
+            disallowedRoadClasses.emplace("residential");
+        }
+    }
+
+    const DataFacade &facade;
+    std::unordered_set<std::string> disallowedRoadClasses{
+        "restricted", "ferry", "service", "unclassified"};
+};
+
 // Input graph edge filter based on the area inside a polygon
 template <typename DataFacade> struct PolygonFilter
 {
     bool operator()(const EdgeID &e) const
     {
         const auto node = facade.GetTarget(e);
-        const auto [p0, p] = getNodeEndpoints(facade, node);
-        if (polygon.Contains(p))
-        {
-            // filter out special road classes
-            const auto roadClasses = facade.GetClasses(facade.GetClassData(node));
-            for (const auto &rc : roadClasses)
-            {
-                if (disallowedRoadClasses.contains(rc))
-                {
-                    util::Log(logDEBUG)
-                        << "Filtering node " << node << " with disallowed road class: " << rc;
-                    return false;
-                }
-            }
-            return true;
-        }
-        return false;
+        const auto [_, p] = getNodeEndpoints(facade, node);
+        return polygon.Contains(p);
     }
 
     const DataFacade &facade;
     const util::Polygon &polygon;
-    std::unordered_set<std::string> disallowedRoadClasses{
-        "restricted", "ferry", "residential", "service", "unclassified"};
 };
 
 // Builds a RI (route inspection) compatible node-based directed subgraph using following rules:
@@ -170,14 +189,25 @@ template <typename DataFacade> struct PolygonFilter
 //              ↑ 1                  \ | /
 //              |                     \|/
 //                                     o 1
-template <typename BaseGraph, typename EdgeFilter = NoFilter>
-auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edgeFilter = {})
+template <typename BaseGraph, typename NodeFilter = NoFilter, typename EdgeFilter = NoFilter>
+auto buildRiGraph(const BaseGraph &g,
+                  const NodeID start,
+                  const NodeFilter &nodeFilter = {},
+                  const EdgeFilter &edgeFilter = {})
 {
     using namespace boost;
 
     BOOST_CONCEPT_ASSERT((InputGraphConcept<BaseGraph>));
 
     RiGraph out{g.GetFacade()};
+
+    if (!nodeFilter(start))
+    {
+        util::Log(logDEBUG) << "Start (NodeID=" << start
+                            << ") is not located on the allowed road class";
+        return out;
+    }
+
     std::unordered_map<NodeID, Vertex> vmap; // old-new vertex mappings
 
     // helpers
@@ -213,12 +243,20 @@ auto buildRiGraph(const BaseGraph &g, const NodeID start, const EdgeFilter &edge
 
         for (const auto e : g.GetOutEdgeRange(u))
         {
+            // filter out edges
             if (!edgeFilter(e))
             {
                 continue;
             }
 
             const auto v = g.GetTarget(e);
+
+            // filter out nodes
+            if (!nodeFilter(v))
+            {
+                continue;
+            }
+
             const auto w = g.GetEdgeWeight(u, e);
             BOOST_ASSERT(u != v && w != INVALID_EDGE_WEIGHT);
 
