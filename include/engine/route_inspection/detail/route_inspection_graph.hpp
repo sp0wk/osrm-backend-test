@@ -665,7 +665,10 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
                 ++deltas[u];
                 --deltas[v];
 #ifndef NDEBUG
-                g.logEdge(dupEdge, "duplicated");
+                if (!get(edge_unused_tag, g, baseEdge))
+                {
+                    g.logEdge(dupEdge, "duplicated");
+                }
 #endif
             }
         }
