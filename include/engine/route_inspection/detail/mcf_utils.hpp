@@ -61,13 +61,15 @@ using McfGraph = McfGraphTraits::Graph;
  * between them where rows represent surplus nodes (sources) and columns - deficit nodes (targets).
  * @param deltas degree delta storage for all surplus/deficit nodes
  * @param maxCapacity total amount of surplus
+ * @param densityLimit max nearest targets per source (perf optimization)
  * @return auto super-source and super-sink vertex descriptors
  */
 inline auto buildMcfGraph(McfGraph &g,
                           const PathMatrix &pathMatrix,
                           const NodeDegreeDeltaArray &deltas,
                           const McfGraphTraits::Capacity maxCapacity =
-                              std::numeric_limits<McfGraphTraits::Capacity>::max())
+                              std::numeric_limits<McfGraphTraits::Capacity>::max(),
+                          const std::size_t densityLimit = 0)
 {
     BOOST_ASSERT(num_vertices(g) == 0 && num_edges(g) == 0);
     BOOST_ASSERT(pathMatrix.data.size() > 0 &&
@@ -113,39 +115,126 @@ inline auto buildMcfGraph(McfGraph &g,
     const auto superSource = addVertex(-1);
     const auto superSink = addVertex(-1);
 
-    // create/add sink nodes
-    std::unordered_map<Vertex, V> sinks; // to get already added sinks
+    std::unordered_map<Vertex, V> sources, sinks;
+    sources.reserve(pathMatrix.sources.size());
     sinks.reserve(pathMatrix.targets.size());
+
+    // create/add source nodes
+    for (const auto &[sIdx, s] : adaptors::index(pathMatrix.sources))
+    {
+        // insert new source node and connect it with super-source
+        const auto sv = addVertex(sIdx);
+        sources[s] = sv;
+        const auto cap = std::abs(deltas[s]);
+        addEdge(superSource, sv, cap, 0);
+    }
+
+    // create/add sink nodes
     for (const auto &[tIdx, t] : adaptors::index(pathMatrix.targets))
     {
         // insert new sink node and connect it to super-sink
         const auto tv = addVertex(tIdx);
         sinks[t] = tv;
-        // connect new deficit node with the super-sink
         const auto cap = std::abs(deltas[t]);
         addEdge(tv, superSink, cap, 0);
     }
+
+    // helper to optimize MCF graph size
+    std::unordered_set<Vertex> connectedTargets;
+    connectedTargets.reserve(pathMatrix.targets.size());
+
+    const auto collectBestEdges = [&](const auto sIdx)
+    {
+        std::vector<std::pair<Vertex, EdgeWeight>> edges;
+        edges.reserve(pathMatrix.targets.size());
+
+        for (const auto t : pathMatrix.targets)
+        {
+            edges.emplace_back(t, pathMatrix.data[sIdx].dists[t]);
+        }
+
+        // sort edges by shortest path distance to source sIdx vertex
+        std::sort(edges.begin(),
+                  edges.end(),
+                  [&](const auto &a, const auto &b) { return a.second < b.second; });
+
+        std::vector<std::pair<Vertex, EdgeWeight>> bestEdges;
+        bestEdges.reserve(edges.size());
+
+        // collect best edges while trying to connect all targets
+        bool requireNewTarget{connectedTargets.size() < pathMatrix.targets.size()};
+        for (const auto &e : edges)
+        {
+            const auto t = e.first;
+            if (requireNewTarget && !connectedTargets.contains(t))
+            {
+                requireNewTarget = false;
+            }
+
+            bestEdges.emplace_back(e);
+            connectedTargets.emplace(t);
+            if (bestEdges.size() >= densityLimit && !requireNewTarget)
+            {
+                // stop when enough targets are collected and at least one new target is connected
+                break;
+            }
+        }
+
+        return bestEdges;
+    };
 
     // create/add source nodes and source->sink edges
     for (const auto &[sIdx, data] : adaptors::index(pathMatrix.data))
     {
         const Vertex s = pathMatrix.sources[sIdx];
-        // insert new surplus node and connect it with super-source
-        const auto sv = addVertex(sIdx);
-        const auto capacity = std::abs(deltas[pathMatrix.sources[sIdx]]);
-        addEdge(superSource, sv, capacity, 0);
+        const auto sv = sources[s];
 
         // connect surplus node to deficit nodes
-        for (const auto t : pathMatrix.targets)
+        if (densityLimit > 0)
         {
-            const auto tv = sinks[t];
-            if (const auto cost = data.dists[t]; cost != INVALID_EDGE_WEIGHT)
+            // Optimization: connect only best N targets per source
+            const auto bestEdges = collectBestEdges(sIdx);
+            for (const auto &[t, w] : bestEdges)
             {
+                const auto tv = sinks[t];
+                const auto cost = data.dists[t];
+                BOOST_ASSERT(cost != INVALID_EDGE_WEIGHT);
                 addEdge(sv, tv, maxCapacity, cost.__value);
             }
-            else
+        }
+        else
+        {
+            for (const auto t : pathMatrix.targets)
             {
-                util::Log(logWARNING) << "MCF: skipping unreachable path " << s << " -> " << t;
+                const auto tv = sinks[t];
+                const auto cost = data.dists[t];
+                BOOST_ASSERT(cost != INVALID_EDGE_WEIGHT);
+                addEdge(sv, tv, maxCapacity, cost.__value);
+            }
+        }
+    }
+
+    // safeguard against disconnected sinks
+    // TODO: implement retry mechanism to guarantee MCF feasibility in case we have sources without
+    // any sinks with capacity > 0
+    if (densityLimit > 0 && connectedTargets.size() < pathMatrix.targets.size())
+    {
+        util::Log(logDEBUG) << "MCF: connecting disconnected sinks...";
+        for (const auto t : pathMatrix.targets)
+        {
+            if (connectedTargets.contains(t))
+            {
+                continue;
+            }
+
+            const auto tv = sinks[t];
+            for (const auto &[sIdx, data] : adaptors::index(pathMatrix.data))
+            {
+                const auto s = pathMatrix.sources[sIdx];
+                const auto sv = sources[s];
+                const auto cost = data.dists[t];
+                BOOST_ASSERT(cost != INVALID_EDGE_WEIGHT);
+                addEdge(sv, tv, maxCapacity, cost.__value);
             }
         }
     }
@@ -173,22 +262,22 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
                  (pathMatrix.sources.size() == pathMatrix.data.size()));
 
     // reasonable time feasibility check
-    static constexpr const auto MCF_LIMIT = 1000;
-    if (const auto n = pathMatrix.sources.size() + pathMatrix.targets.size(); n > MCF_LIMIT)
+    std::size_t densityLimit{0};
+    static constexpr const std::size_t MCF_LIMIT = 10000;
+    if (const auto n = pathMatrix.sources.size() * pathMatrix.targets.size(); n > MCF_LIMIT)
     {
-        util::Log(logWARNING) << "Number of sources/targets for MCF solver is too high (s+t=" << n
-                              << " > 1000). Calculation might be slow...";
-        if (n > MCF_LIMIT * 2)
-        {
-            util::Log(logWARNING) << "Number of sources/targets for MCF solver exceeds reasonable "
-                                     "threshold, aborting...";
-            return {};
-        }
+        const auto minDensity =
+            std::max<std::size_t>(10, (pathMatrix.targets.size() / pathMatrix.sources.size()) + 1);
+        densityLimit = std::max(minDensity, MCF_LIMIT / pathMatrix.sources.size());
+        util::Log(logDEBUG) << "Number of sources/targets for MCF solver is too high (s*t=" << n
+                            << " > " << MCF_LIMIT << "). Using densityLimit=" << densityLimit
+                            << " to optimize MCF graph size";
     }
 
     // build min-cost flow graph
     McfGraph g;
-    const auto [superSource, superSink] = buildMcfGraph(g, pathMatrix, deltas, maxCapacity);
+    const auto [superSource, superSink] =
+        buildMcfGraph(g, pathMatrix, deltas, maxCapacity, densityLimit);
 
     // solve min-cost flow
     // TODO: consider more scalable MCF solver than SSP (or optimize number of nodes)
