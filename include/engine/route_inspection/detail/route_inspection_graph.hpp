@@ -225,6 +225,7 @@ auto buildRiGraph(const BaseGraph &g,
         BOOST_ASSERT(isNew);
         put(edge_name, out, e, edgeName);
         put(edge_weight, out, e, weight);
+        put(edge_unused_tag, out, e, false);
         return e;
     };
 
@@ -565,39 +566,24 @@ inline void optimizeRiGraph(RiGraph &g)
     const Vertex start{0};
     const auto usedEdges = collectMinCostEdgeSet(g, start);
 
-    // 3) Collect unused edges
-    std::vector<Edge> unusedEdges;
-    unusedEdges.reserve(num_edges(g) - usedEdges.size());
+    // 3) Mark unused edges
+    std::size_t nbOfUnusedEdges{0};
     for (const auto e : make_iterator_range(edges(g)))
     {
         if (!usedEdges.contains(e))
         {
-            // edge is estimated as not optimal -> remove
-            unusedEdges.emplace_back(e);
-        }
+            // edge is estimated as not optimal -> mark it
+            put(edge_unused_tag, g, e, true);
+            ++nbOfUnusedEdges;
 #ifndef NDEBUG
-        else
-        {
-            g.logEdge(e, "used");
-        }
+            g.logEdge(e, "unused");
 #endif
+        }
     }
 
-    // 4) Actual edge removal
-    for (const auto e : unusedEdges)
-    {
-#ifndef NDEBUG
-        g.logEdge(e, "unused");
-#endif
-        remove_edge(e, g);
-    }
-
-    // filter out unresolved cycles
-    dropMinorSCCs(g);
-
-    util::Log(logDEBUG)
-        << "[optimizeRiGraph]  Number of edges before/after removing unused edges:  "
-        << initEdgeCount << " vs " << num_edges(g);
+    util::Log(logDEBUG) << "[optimizeRiGraph]  Number of unused (non-optimal) edges compared to "
+                           "initial edge count:  "
+                        << nbOfUnusedEdges << " vs " << initEdgeCount;
 }
 
 // Adds deficit edges to imbalanced graph through solving min-cost flow problem to make graph
@@ -674,9 +660,13 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
                 BOOST_ASSERT(isNew);
                 put(boost::edge_name, g, dupEdge, node);
                 put(boost::edge_weight, g, dupEdge, weight);
+                put(edge_unused_tag, g, dupEdge, false);
                 // adjust degree deltas
                 ++deltas[u];
                 --deltas[v];
+#ifndef NDEBUG
+                g.logEdge(dupEdge, "duplicated");
+#endif
             }
         }
     }

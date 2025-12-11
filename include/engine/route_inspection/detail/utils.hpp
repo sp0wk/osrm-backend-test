@@ -69,7 +69,7 @@ inline bool isValidGraph(const RiGraphBase &g)
 }
 
 // Retrieves RiGraph's vertices which belong to minor SCCs and prevents graph's strong connectivity
-inline std::vector<Vertex> findMinorSCCs(RiGraphBase &g)
+inline std::vector<Vertex> findMinorSCCs(const RiGraphBase &g)
 {
     using namespace boost;
 
@@ -109,8 +109,11 @@ inline NodeDegreeDeltaArray collectNodeDegreeDeltas(const RiGraphBase &g)
     NodeDegreeDeltaArray deltas(num_vertices(g));
     for (const auto e : boost::make_iterator_range(edges(g)))
     {
-        deltas[source(e, g)] += 1;
-        deltas[target(e, g)] -= 1;
+        if (!get(edge_unused_tag, g, e))
+        {
+            deltas[source(e, g)] += 1;
+            deltas[target(e, g)] -= 1;
+        }
     }
     return deltas;
 }
@@ -141,6 +144,7 @@ inline Path findEulerianCircuit(const RiGraphBase &g, const Vertex source)
 
     // prepare initial state
     const auto nbOfVertices = num_vertices(g);
+    std::size_t nbOfUsedEdges{0};
     std::vector<EdgeIt> unusedEdges(nbOfVertices);
     for (const auto u : boost::make_iterator_range(vertices(g)))
     {
@@ -155,11 +159,24 @@ inline Path findEulerianCircuit(const RiGraphBase &g, const Vertex source)
     while (!st.empty())
     {
         const auto u = st.top();
-        if (const auto e = unusedEdges[u]; e != out_edges(u, g).second)
+        std::optional<EdgeIt> nextEdge;
+        for (auto e = unusedEdges[u]; e != out_edges(u, g).second; ++e)
+        {
+            // skip unused edges
+            if (!get(edge_unused_tag, g, *e))
+            {
+                nextEdge.emplace(e);
+                break;
+            }
+        }
+
+        if (nextEdge)
         {
             // take next edge u->v
+            auto e = *nextEdge;
             const auto v = target(*e, g);
-            unusedEdges[u]++;
+            unusedEdges[u] = ++e;
+            ++nbOfUsedEdges;
             st.push(v);
         }
         else
@@ -169,8 +186,8 @@ inline Path findEulerianCircuit(const RiGraphBase &g, const Vertex source)
         }
     }
 
-    // verify circuit visits all edges and is a closed one
-    if ((circuit.size() - 1) != num_edges(g) || circuit.front() != circuit.back())
+    // verify circuit visits all used edges and is a closed one
+    if ((circuit.size() - 1) != nbOfUsedEdges || circuit.front() != circuit.back())
     {
         // incomplete circuit
         util::Log(logDEBUG) << "Incomplete Eulerian circuit for s=" << source;

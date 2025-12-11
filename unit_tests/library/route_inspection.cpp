@@ -1,5 +1,6 @@
 #include <boost/test/unit_test.hpp>
 
+#include "engine/route_inspection/detail/types.hpp"
 #include "engine/route_inspection/input_graph_adaptors.hpp"
 #include "engine/route_inspection/route_inspection.hpp"
 
@@ -110,6 +111,13 @@ template <typename G, typename V> void testNoEdge(const G &g, V u, V v)
 {
     const auto [_, exists] = edge(u, v, g);
     BOOST_TEST(!exists);
+}
+
+template <typename G, typename V> void testUnusedEdge(const G &g, V u, V v)
+{
+    const auto [e, exists] = edge(u, v, g);
+    BOOST_REQUIRE(exists);
+    BOOST_TEST(get(rid::edge_unused_tag, g, e));
 }
 
 } // namespace
@@ -488,13 +496,14 @@ BOOST_AUTO_TEST_CASE(test_build_ri_graph_from_ebg_trivial)
     auto rig = makeRiGraph(g, v0);
 
     BOOST_TEST(num_vertices(rig) == 7);
-    BOOST_TEST(num_edges(rig) == 7); // 3 edges were optimized out
+    BOOST_TEST(num_edges(rig) == 10);
 
-    testNoEdge(rig, 0, 1);
-    testNoEdge(rig, 3, 4);
+    // 3 edges were optimized out
+    testUnusedEdge(rig, 0, 1);
+    testUnusedEdge(rig, 3, 4);
     testEdge(rig, 5, 6, 20);
     testEdge(rig, 6, 4, 15);
-    testNoEdge(rig, 4, 2);
+    testUnusedEdge(rig, 4, 2);
 }
 
 BOOST_AUTO_TEST_CASE(test_build_ri_graph_from_ebg_complex_intersection)
@@ -561,10 +570,12 @@ BOOST_AUTO_TEST_CASE(test_build_ri_graph_from_ebg_complex_intersection)
     auto rig = makeRiGraph(g, v0);
 
     BOOST_TEST(num_vertices(rig) == 12);
-    BOOST_TEST(num_edges(rig) == 13); // 3 edges were optimized out
+    BOOST_TEST(num_edges(rig) == 14); // 2 costly edges removed
 
+    // 3 edges were optimized out
     testNoEdge(rig, 0, 1);
     testEdge(rig, 0, 2, 10);
+    testUnusedEdge(rig, 10, 2);
     testNoEdge(rig, 11, 2);
 }
 
@@ -814,14 +825,14 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_use_shortcut)
     auto v8 = g.InsertNode();
     auto v9 = g.InsertNode();
     g.InsertEdge(v0, v1, w);
-    g.InsertEdge(v1, v2, weight(5));
+    g.InsertEdge(v0, v2, weight(5));
     g.InsertEdge(v1, v3, w);
     g.InsertEdge(v2, v4, w);
     g.InsertEdge(v3, v5, w);
     g.InsertEdge(v4, v6, w);
     g.InsertEdge(v5, v7, weight(10));
     g.InsertEdge(v5, v8, weight(20));
-    g.InsertEdge(v6, v1, w);
+    g.InsertEdge(v6, v3, w);
     g.InsertEdge(v7, v8, weight(12));
     g.InsertEdge(v8, v9, w);
     g.InsertEdge(v9, v0, w);
@@ -829,7 +840,6 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_use_shortcut)
     auto rig = makeRiGraph(g, v0);
     const auto path = runRouteInspection(rig, 0);
 
-    // TODO: optimize path by allowing 5->8 shortcut
     BOOST_REQUIRE(path.size() == 16);
     BOOST_TEST(path[0] == 0);
     BOOST_TEST(path[1] == 1);

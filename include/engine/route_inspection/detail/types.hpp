@@ -6,6 +6,7 @@
 #include "util/typedefs.hpp"
 
 #include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/properties.hpp>
 
 #include <cstdlib>
 #include <vector>
@@ -14,12 +15,24 @@ namespace osrm::engine::route_inspection::detail
 {
 
 // Main graph types (BGL based) used for route inspection implementation
+
+// tag to indicate unused (non-optimal edges)
+struct edge_unused_tag_t
+{
+    using kind = boost::edge_property_tag;
+};
+static constexpr const edge_unused_tag_t edge_unused_tag{};
+
 using RiGraphBase = boost::adjacency_list<
     boost::vecS,
     boost::vecS,
     boost::bidirectionalS,
     boost::property<boost::vertex_name_t, NodeID>,
-    boost::property<boost::edge_name_t, EdgeID, boost::property<boost::edge_weight_t, EdgeWeight>>>;
+    boost::property<boost::edge_name_t,
+                    EdgeID,
+                    boost::property<boost::edge_weight_t,
+                                    EdgeWeight,
+                                    boost::property<edge_unused_tag_t, bool>>>>;
 
 using Vertex = boost::graph_traits<RiGraphBase>::vertex_descriptor;
 using Edge = boost::graph_traits<RiGraphBase>::edge_descriptor;
