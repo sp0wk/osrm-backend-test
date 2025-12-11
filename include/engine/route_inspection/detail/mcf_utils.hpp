@@ -194,6 +194,7 @@ inline MinCostFlow solveMinCostFlow(const PathMatrix &pathMatrix,
     // TODO: consider more scalable MCF solver than SSP (or optimize number of nodes)
     util::Log(logDEBUG) << "Running SSP search to determine optimal flow...";
     successive_shortest_path_nonnegative_weights(g, superSource, superSink);
+    util::Log(logDEBUG) << "SSP search has finished";
 
     // prepare result
     auto vertexToIdxMap = get(vertex_name, g);
