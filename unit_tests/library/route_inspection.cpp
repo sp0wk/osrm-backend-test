@@ -1023,6 +1023,191 @@ BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_optimal_cost)
     BOOST_TEST(path[10] == 0);
 }
 
+BOOST_AUTO_TEST_CASE(test_route_inspection_with_ebg_grid)
+{
+    // Input EBG:
+    //        13     30     40
+    //     ↑<-29--↑--14--↑--31->↑
+    //     |      |      |      |
+    //   28|11  12|5   32|17  41|35
+    //     |      |      |      |
+    //     |<--4--<--16--<--34--|
+    //     |      |      |      |
+    //   10|25   3|1   15|6   33|18
+    //     |      |      |      |
+    //     |--26-->---2-->--7-->|
+    //     |      |      |      |
+    //   27|39   9|0    8|20  19|36
+    //     |      |      |      |
+    //     ↓<--24-↓--22--↓--37->↓
+    //         38    23     21
+
+    NodeBasedDynamicGraph g;
+
+    using NodeIt = NodeBasedDynamicGraph::NodeIterator;
+    std::vector<NodeIt> nodes(42);
+    for (const auto i : osrm::util::irange(0, 42))
+    {
+        nodes[i] = g.InsertNode();
+    }
+
+    const auto &v = nodes;
+    {
+        const auto w = weight(10);
+        const auto wleft = weight(14);
+        const auto wright = weight(12);
+        const auto wuturn = weight(23);
+
+        g.InsertEdge(v[0], v[1], w);
+        g.InsertEdge(v[0], v[2], wright);
+        g.InsertEdge(v[1], v[3], wuturn);
+        g.InsertEdge(v[1], v[4], wleft);
+        g.InsertEdge(v[1], v[5], w);
+        g.InsertEdge(v[2], v[7], w);
+        g.InsertEdge(v[2], v[6], wleft);
+        g.InsertEdge(v[2], v[8], wright);
+        g.InsertEdge(v[3], v[1], wuturn);
+        g.InsertEdge(v[3], v[2], wleft);
+        g.InsertEdge(v[3], v[9], w);
+        g.InsertEdge(v[4], v[10], wleft);
+        g.InsertEdge(v[4], v[11], wright);
+        g.InsertEdge(v[5], v[12], wuturn);
+        g.InsertEdge(v[5], v[13], wleft);
+        g.InsertEdge(v[5], v[14], wright);
+        g.InsertEdge(v[6], v[16], wleft);
+        g.InsertEdge(v[6], v[15], wuturn);
+        g.InsertEdge(v[6], v[17], w);
+        g.InsertEdge(v[7], v[18], wleft);
+        g.InsertEdge(v[7], v[19], wright);
+        g.InsertEdge(v[8], v[20], wuturn);
+        g.InsertEdge(v[8], v[21], wleft);
+        g.InsertEdge(v[8], v[22], wright);
+        g.InsertEdge(v[9], v[0], wuturn);
+        g.InsertEdge(v[9], v[23], wleft);
+        g.InsertEdge(v[9], v[24], wright);
+        g.InsertEdge(v[10], v[25], wuturn);
+        g.InsertEdge(v[10], v[26], wleft);
+        g.InsertEdge(v[10], v[27], w);
+        g.InsertEdge(v[11], v[28], wuturn);
+        g.InsertEdge(v[11], v[29], wright);
+        g.InsertEdge(v[12], v[5], wuturn);
+        g.InsertEdge(v[12], v[3], w);
+        g.InsertEdge(v[12], v[4], wright);
+        g.InsertEdge(v[13], v[29], wuturn);
+        g.InsertEdge(v[13], v[28], wleft);
+        g.InsertEdge(v[14], v[30], wuturn);
+        g.InsertEdge(v[14], v[31], w);
+        g.InsertEdge(v[14], v[32], wright);
+        g.InsertEdge(v[15], v[6], wuturn);
+        g.InsertEdge(v[15], v[7], wleft);
+        g.InsertEdge(v[15], v[8], w);
+        g.InsertEdge(v[16], v[3], wleft);
+        g.InsertEdge(v[16], v[3], wleft);
+        g.InsertEdge(v[16], v[4], w);
+        g.InsertEdge(v[16], v[5], wright);
+        g.InsertEdge(v[17], v[32], wuturn);
+        g.InsertEdge(v[17], v[30], wleft);
+        g.InsertEdge(v[17], v[31], wright);
+        g.InsertEdge(v[18], v[34], wleft);
+        g.InsertEdge(v[18], v[33], wuturn);
+        g.InsertEdge(v[18], v[35], w);
+        g.InsertEdge(v[19], v[36], wuturn);
+        g.InsertEdge(v[19], v[37], wright);
+        g.InsertEdge(v[20], v[6], w);
+        g.InsertEdge(v[20], v[7], wright);
+        g.InsertEdge(v[21], v[37], wuturn);
+        g.InsertEdge(v[21], v[36], wleft);
+        g.InsertEdge(v[22], v[23], wuturn);
+        g.InsertEdge(v[22], v[24], w);
+        g.InsertEdge(v[22], v[0], wright);
+        g.InsertEdge(v[23], v[22], wuturn);
+        g.InsertEdge(v[23], v[20], wleft);
+        g.InsertEdge(v[23], v[21], w);
+        g.InsertEdge(v[24], v[38], wuturn);
+        g.InsertEdge(v[24], v[39], wright);
+        g.InsertEdge(v[25], v[10], wuturn);
+        g.InsertEdge(v[25], v[11], w);
+        g.InsertEdge(v[26], v[1], wleft);
+        g.InsertEdge(v[26], v[2], w);
+        g.InsertEdge(v[26], v[9], wright);
+        g.InsertEdge(v[27], v[39], wuturn);
+        g.InsertEdge(v[27], v[38], wleft);
+        g.InsertEdge(v[28], v[11], wuturn);
+        g.InsertEdge(v[28], v[10], w);
+        g.InsertEdge(v[29], v[13], wuturn);
+        g.InsertEdge(v[29], v[14], w);
+        g.InsertEdge(v[29], v[12], wright);
+        g.InsertEdge(v[30], v[14], wuturn);
+        g.InsertEdge(v[30], v[12], wleft);
+        g.InsertEdge(v[30], v[13], w);
+        g.InsertEdge(v[31], v[40], wuturn);
+        g.InsertEdge(v[31], v[41], wright);
+        g.InsertEdge(v[32], v[17], wuturn);
+        g.InsertEdge(v[32], v[15], w);
+        g.InsertEdge(v[32], v[16], wright);
+        g.InsertEdge(v[33], v[18], wuturn);
+        g.InsertEdge(v[33], v[19], w);
+        g.InsertEdge(v[34], v[15], wleft);
+        g.InsertEdge(v[34], v[16], w);
+        g.InsertEdge(v[34], v[17], wright);
+        g.InsertEdge(v[35], v[41], wuturn);
+        g.InsertEdge(v[35], v[40], wleft);
+        g.InsertEdge(v[36], v[19], wuturn);
+        g.InsertEdge(v[36], v[18], w);
+        g.InsertEdge(v[37], v[21], wuturn);
+        g.InsertEdge(v[37], v[22], w);
+        g.InsertEdge(v[37], v[20], wright);
+        g.InsertEdge(v[38], v[24], wuturn);
+        g.InsertEdge(v[38], v[0], wleft);
+        g.InsertEdge(v[38], v[23], w);
+        g.InsertEdge(v[39], v[27], wuturn);
+        g.InsertEdge(v[39], v[25], w);
+        g.InsertEdge(v[39], v[26], wright);
+        g.InsertEdge(v[40], v[31], wuturn);
+        g.InsertEdge(v[40], v[32], wleft);
+        g.InsertEdge(v[40], v[30], w);
+        g.InsertEdge(v[41], v[35], wuturn);
+        g.InsertEdge(v[41], v[33], w);
+        g.InsertEdge(v[41], v[34], wright);
+    }
+
+    auto rig = makeRiGraph(g, v[0]);
+    BOOST_REQUIRE(num_vertices(rig) == g.GetNumberOfNodes());
+    BOOST_REQUIRE(num_edges(rig) == g.GetNumberOfEdges());
+
+    const auto p = ri::routeInspectionImpl(rig, 0);
+    const auto res = ri::prepareFinalRoute(rig, p);
+    const auto &path = res.nodes;
+
+    // TODO fix test with better edge pruning heuristic
+    // nodes        cost
+    // 0 1 5        (30)
+    // 14 31        (22)
+    // 41 33 19     (32)
+    // 37 22 24     (32)
+    // 39 25 11     (32)
+    // 29           (12)
+    // 12 3 9       (32)
+    // 23 21        (24)
+    // 36 18 35     (34)
+    // 40 30 13     (34)
+    // 28 10 27     (34)
+    // 38 23        (24)
+    // 20 6 17      (34)
+    // 32           (23)
+    // 16 4         (22)
+    // 10           (14)
+    // 26 2 7       (34)
+    // 18           (14)
+    // 34           (14)
+    // 15 8         (24)
+    // 22           (12)
+    // 0            (2)
+    // Total:       535
+    BOOST_TEST(path.size() == 47);
+    BOOST_TEST(res.cost == EdgeWeight{535});
+}
+
 //-------------------------------------------------------------------------------------------------
 // Integration tests
 //-------------------------------------------------------------------------------------------------

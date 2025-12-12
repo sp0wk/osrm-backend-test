@@ -433,6 +433,9 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
         return usedEdges;
     }
 
+    // safeguard against disjoint start
+    disjointInNodes.erase(start);
+
     // 3) Find shortest paths from/to start
     std::vector<Vertex> preds(num_vertices(g));
     std::vector<EdgeWeight> dists(num_vertices(g), INVALID_EDGE_WEIGHT);
@@ -467,33 +470,30 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
         BOOST_ASSERT(exists);
         usedEdges.emplace(e);
 
+        // handle potential cycle
         if (disjointInNodes.contains(v))
         {
-            // possible cycle -> find/add exit edge
-            while (v != start)
+            if (auto it = std::find(circuit.cbegin(), circuit.cend(), u); it != circuit.cend())
             {
-                auto u = v;
-                v = revPreds[v];
-                const auto [e, exists] = edge(u, v, g);
-                BOOST_ASSERT(exists);
-                if (!usedEdges.contains(e))
+                // TODO: optimize cycle search
+                bool cycleFound{false};
+                while (it != circuit.cbegin())
                 {
-                    // found exit edge
-                    usedEdges.emplace(e);
-                    // fix in-disjoint with this edge unless it's a disjoint->disjoint transition
-                    // which is disallowed to prevent cycles
-                    if (!disjointOutNodes.contains(u))
+                    if (*it-- == v)
                     {
-                        disjointInNodes.erase(v);
+                        cycleFound = true;
+                        break;
                     }
-                    break;
+                }
+                if (!cycleFound)
+                {
+                    disjointInNodes.erase(v);
                 }
             }
         }
     }
 
     // 5) Fix leftover in-disjoints by connecting start to them using shortest path
-    disjointInNodes.erase(start); // safeguard against disjoint start
     for (const auto v : disjointInNodes)
     {
         BOOST_ASSERT(in_degree(v, g) > 1);
@@ -579,6 +579,12 @@ inline void optimizeRiGraph(RiGraph &g)
             g.logEdge(e, "unused");
 #endif
         }
+// #ifndef NDEBUG
+//         else
+//         {
+//             g.logEdge(e, "used");
+//         }
+// #endif
     }
 
     util::Log(logDEBUG) << "[optimizeRiGraph]  Number of unused (non-optimal) edges compared to "
