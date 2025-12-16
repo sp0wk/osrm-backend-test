@@ -9,7 +9,6 @@
 #include "util/typedefs.hpp"
 
 #include <boost/assert.hpp>
-#include <boost/range/adaptor/filtered.hpp>
 
 #include <cstdint>
 
@@ -37,7 +36,6 @@ template <typename EdgeIterator> struct DynamicNode
 
 template <typename NodeIterator, typename EdgeDataT> struct DynamicEdge
 {
-    NodeIterator source;
     NodeIterator target;
     EdgeDataT data;
 };
@@ -49,7 +47,6 @@ template <typename EdgeDataT> class DynamicGraph
     using EdgeData = EdgeDataT;
     using NodeIterator = std::uint32_t;
     using EdgeIterator = std::uint32_t;
-    using NodeRange = range<NodeIterator>;
     using EdgeRange = range<EdgeIterator>;
 
     using Node = detail::DynamicNode<EdgeIterator>;
@@ -91,7 +88,7 @@ template <typename EdgeDataT> class DynamicGraph
         node_array.resize(number_of_nodes);
 
         edge_list.reserve(number_of_nodes * 1.1);
-        edge_list.resize(number_of_nodes ? number_of_nodes - 1 : 0);
+        edge_list.resize(number_of_nodes);
     }
 
     /**
@@ -127,7 +124,6 @@ template <typename EdgeDataT> class DynamicGraph
             for (const auto i : irange(node_array[node].first_edge,
                                        node_array[node].first_edge + node_array[node].edges))
             {
-                edge_list[i].source = graph[edge].source;
                 edge_list[i].target = graph[edge].target;
                 BOOST_ASSERT(edge_list[i].target < number_of_nodes);
                 edge_list[i].data = graph[edge].data;
@@ -224,23 +220,6 @@ template <typename EdgeDataT> class DynamicGraph
     unsigned GetNumberOfEdges() const { return number_of_edges; }
     auto GetEdgeCapacity() const { return edge_list.size(); }
 
-    NodeRange GetNodeRange() const noexcept { return irange(0U, GetNumberOfNodes()); }
-
-    // returns all valid edges
-    auto GetEdgeRange() const noexcept
-    {
-        return boost::adaptors::filter(irange(0UL, edge_list.size()),
-                                       [this](const auto e) { return !isDummy(e); });
-    }
-
-    // returns all valid and directed edges
-    auto GetDirectedEdgeRange() const noexcept
-    {
-        return boost::adaptors::filter(irange(0UL, edge_list.size()),
-                                       [this](const auto e)
-                                       { return !isDummy(e) && !GetEdgeData(e).reversed; });
-    }
-
     unsigned GetOutDegree(const NodeIterator n) const { return node_array[n].edges; }
 
     unsigned GetDirectedOutDegree(const NodeIterator n) const
@@ -255,18 +234,6 @@ template <typename EdgeDataT> class DynamicGraph
         }
         return degree;
     }
-
-    // returns all outgoing directed edges for a node
-    auto GetAdjacentDirectedEdgeRange(const NodeIterator node) const
-    {
-        const auto edges = GetAdjacentEdgeRange(node);
-        return boost::adaptors::filter(
-            edges, [this](const auto e) { return !this->GetEdgeData(e).reversed; });
-    }
-
-    NodeIterator GetSource(const EdgeIterator e) const { return NodeIterator(edge_list[e].source); }
-
-    void SetSource(const EdgeIterator e, const NodeIterator n) { edge_list[e].source = n; }
 
     NodeIterator GetTarget(const EdgeIterator e) const { return NodeIterator(edge_list[e].target); }
 
@@ -293,8 +260,10 @@ template <typename EdgeDataT> class DynamicGraph
 
     NodeIterator InsertNode()
     {
-        node_array.emplace_back();
-        return number_of_nodes++;
+        node_array.emplace_back(node_array.back());
+        number_of_nodes += 1;
+
+        return number_of_nodes;
     }
 
     // adds an edge. Invalidates edge iterators for the source node
@@ -342,14 +311,12 @@ template <typename EdgeDataT> class DynamicGraph
         }
         // get the position for the edge that is to be inserted
         // and write it
-        const auto idx = node.first_edge + node.edges;
-        Edge &edge = edge_list[idx];
-        edge.source = from;
+        Edge &edge = edge_list[node.first_edge + node.edges];
         edge.target = to;
         edge.data = data;
         ++number_of_edges;
         ++node.edges;
-        return EdgeIterator(idx);
+        return EdgeIterator(node.first_edge + node.edges);
     }
 
     // removes an edge. Invalidates edge iterators for the source node
