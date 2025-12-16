@@ -3,6 +3,7 @@
 
 #include "engine/datafacade/datafacade_base.hpp"
 #include "engine/route_inspection/detail/mcf_utils.hpp"
+#include "engine/route_inspection/detail/ri_debug_logger.hpp"
 #include "engine/route_inspection/detail/types.hpp"
 #include "engine/route_inspection/detail/utils.hpp"
 
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <stack>
@@ -40,11 +42,14 @@ class RiGraph : public RiGraphBase
   public:
     explicit RiGraph(const datafacade::BaseDataFacade &facade) : RiGraphBase(), facade{&facade} {}
 
+    void setLogger(const std::string &plotFileName)
+    {
+        logger_ = std::make_unique<RiDebugLogger>(plotFileName);
+    }
+
     const datafacade::BaseDataFacade &GetFacade() const noexcept { return *facade; }
 
-    // TODO replace with actual GeoJSON
-
-    void logVertex(const Vertex u, std::string_view label = {}) const
+    void logVertexPlain(const Vertex u, std::string_view label = {}) const
     {
         const auto [c1, c2] = getVertexCoords(u);
         auto node = get(boost::vertex_name, *this, u);
@@ -52,23 +57,19 @@ class RiGraph : public RiGraphBase
                   << "],[" << c2.lon << "," << c2.lat << "]]," << std::endl;
     }
 
-    void logVertexStart(const Vertex u, std::string_view label = {}) const
+    void logVertex(const Vertex u, const DebugFeatureType type) const
     {
-        const auto [c, _] = getVertexCoords(u);
+        const auto [c1, c2] = getVertexCoords(u);
         auto node = get(boost::vertex_name, *this, u);
-        std::cout << label << " vertex start " << u << " (" << node << "): [" << c.lon << ","
-                  << c.lat << "]" << std::endl;
+        std::cout << toString(type) << " vertex " << u << " (" << node << "): [[" << c1.lon << ","
+                  << c1.lat << "],[" << c2.lon << "," << c2.lat << "]]," << std::endl;
+        if (logger_ != nullptr)
+        {
+            logger_->logVertex(c1, c2, type);
+        }
     }
 
-    void logVertexEnd(const Vertex u, std::string_view label = {}) const
-    {
-        const auto [_, c] = getVertexCoords(u);
-        auto node = get(boost::vertex_name, *this, u);
-        std::cout << label << " vertex end " << u << " (" << node << "): [" << c.lon << "," << c.lat
-                  << "]" << std::endl;
-    }
-
-    void logEdge(const Edge e, std::string_view label = {}) const
+    void logEdgePlain(const Edge e, std::string_view label) const
     {
         const auto u = source(e, *this);
         const auto v = target(e, *this);
@@ -82,11 +83,29 @@ class RiGraph : public RiGraphBase
                   << c4.lon << "," << c4.lat << "]]," << std::endl;
     }
 
-    void logEdge(const Vertex u, const Vertex v, std::string_view label = {}) const
+    void logEdge(const Edge e, const DebugFeatureType type) const
+    {
+        const auto u = source(e, *this);
+        const auto v = target(e, *this);
+        const auto [c1, c2] = getVertexCoords(u);
+        const auto [c3, c4] = getVertexCoords(v);
+        BOOST_ASSERT(c2 == c3);
+        const auto from = get(boost::vertex_name, *this, u);
+        const auto to = get(boost::vertex_name, *this, v);
+        std::cout << toString(type) << " edge " << u << " -> " << v << " (" << from << " -> " << to
+                  << "): [[" << c1.lon << "," << c1.lat << "],[" << c2.lon << "," << c2.lat << "],["
+                  << c4.lon << "," << c4.lat << "]]," << std::endl;
+        if (logger_ != nullptr)
+        {
+            logger_->logEdge(c1, c2, c4, type);
+        }
+    }
+
+    void logEdge(const Vertex u, const Vertex v, const DebugFeatureType type) const
     {
         const auto [e, exists] = edge(u, v, *this);
         BOOST_ASSERT(exists);
-        logEdge(e, label);
+        logEdge(e, type);
     };
 
   private:
@@ -98,6 +117,7 @@ class RiGraph : public RiGraphBase
     }
 
     const datafacade::BaseDataFacade *facade{nullptr};
+    mutable std::unique_ptr<RiDebugLogger> logger_{nullptr};
 };
 
 // strong connectivity helper
@@ -112,7 +132,7 @@ inline void dropMinorSCCs(RiGraph &g)
     for (const auto v : boost::adaptors::reverse(toRemove))
     {
 #ifndef NDEBUG
-        g.logVertex(v, "minorScc");
+        g.logVertex(v, DebugFeatureType::DEADEND_NODES);
 #endif
         clear_vertex(v, g);
         remove_vertex(v, g);
@@ -282,9 +302,6 @@ auto buildRiGraph(const BaseGraph &g,
         util::Log(logDEBUG) << "Invalid RiGraph: start vertex has 0 incoming edges";
         return RiGraph{g.GetFacade()};
     }
-
-    // ensure single SCC without dead-ends
-    dropMinorSCCs(out);
 
     return out;
 }
@@ -460,7 +477,7 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
         }
 
 #ifndef NDEBUG
-        g.logVertex(u, "disjointOut");
+        g.logVertex(u, DebugFeatureType::DISJOINT_OUT_NODES);
 #endif
 
         BOOST_ASSERT(revDists[u] != INVALID_EDGE_WEIGHT);
@@ -500,7 +517,7 @@ inline auto collectMinCostEdgeSet(const RiGraph &g, const Vertex start)
         BOOST_ASSERT(dists[v] != INVALID_EDGE_WEIGHT);
 
 #ifndef NDEBUG
-        g.logVertex(v, "disjointIn");
+        g.logVertex(v, DebugFeatureType::DISJOINT_IN_NODES);
 #endif
 
         const auto u = preds[v];
@@ -553,7 +570,7 @@ inline void optimizeRiGraph(RiGraph &g)
     for (const auto e : costlyEdges)
     {
 #ifndef NDEBUG
-        g.logEdge(e, "costly");
+        g.logEdge(e, DebugFeatureType::COSTLY_EDGES);
 #endif
         remove_edge(e, g);
     }
@@ -576,15 +593,15 @@ inline void optimizeRiGraph(RiGraph &g)
             put(edge_unused_tag, g, e, true);
             ++nbOfUnusedEdges;
 #ifndef NDEBUG
-            g.logEdge(e, "unused");
+            g.logEdge(e, DebugFeatureType::UNUSED_EDGES);
 #endif
         }
-// #ifndef NDEBUG
-//         else
-//         {
-//             g.logEdge(e, "used");
-//         }
-// #endif
+#ifndef NDEBUG
+        else
+        {
+            g.logEdge(e, DebugFeatureType::USED_EDGES);
+        }
+#endif
     }
 
     util::Log(logDEBUG) << "[optimizeRiGraph]  Number of unused (non-optimal) edges compared to "
@@ -673,7 +690,7 @@ inline bool augmentImbalancedGraph(RiGraph &g, NodeDegreeDeltaArray &deltas)
 #ifndef NDEBUG
                 if (!get(edge_unused_tag, g, baseEdge))
                 {
-                    g.logEdge(dupEdge, "duplicated");
+                    g.logEdge(dupEdge, DebugFeatureType::DUPLICATE_EDGES);
                 }
 #endif
             }

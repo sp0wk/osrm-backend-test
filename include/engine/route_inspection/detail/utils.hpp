@@ -63,10 +63,7 @@ inline bool isStronglyConnectedGraph(const RiGraphBase &g)
 }
 
 // RiGraph correctness verification
-inline bool isValidGraph(const RiGraphBase &g)
-{
-    return num_vertices(g) >= 2 && num_edges(g) >= 2 && isStronglyConnectedGraph(g);
-}
+inline bool isValidGraph(const RiGraphBase &g) { return num_vertices(g) >= 2 && num_edges(g) >= 2; }
 
 // Retrieves RiGraph's vertices which belong to minor SCCs and prevents graph's strong connectivity
 inline std::vector<Vertex> findMinorSCCs(const RiGraphBase &g)

@@ -82,6 +82,7 @@ auto makeRiGraph(const NodeBasedDynamicGraph &g, const NodeID start)
 {
     MockInputGraphWrapper ig{g};
     auto rig = rid::buildRiGraph(ig, start);
+    dropMinorSCCs(rig);
     BOOST_REQUIRE(rid::isStronglyConnectedGraph(rig));
     if constexpr (useOptimizedGraph)
     {
@@ -146,6 +147,7 @@ BOOST_AUTO_TEST_CASE(test_not_strongly_connected_graph)
 
     MockInputGraphWrapper ig{g};
     auto rig = rid::buildRiGraph(ig, v0);
+    dropMinorSCCs(rig);
 
     // 3->4 deadend was removed
     BOOST_TEST(rid::isStronglyConnectedGraph(rig));

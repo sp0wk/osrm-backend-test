@@ -109,7 +109,7 @@ inline RouteInspectionResult prepareFinalRoute(const RiGraph &g, const Path &pat
     // first node
     result.nodes.emplace_back(toNodeID(path[0]));
 #ifndef NDEBUG
-    g.logVertexEnd(path[0], "final route #1");
+    g.logVertexPlain(path[0], "final route #1");
 #endif
 
     for (std::size_t n = 1; n < path.size(); ++n)
@@ -120,7 +120,7 @@ inline RouteInspectionResult prepareFinalRoute(const RiGraph &g, const Path &pat
         // node
         result.nodes.emplace_back(toNodeID(v));
 #ifndef NDEBUG
-        g.logVertexEnd(v, "final route #" + std::to_string(n + 1));
+        g.logVertexPlain(v, "final route #" + std::to_string(n + 1));
 #endif
 
         // edge
@@ -201,6 +201,7 @@ RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
     // TODO better selection
     const NodeID s =
         start.IsValidForwardSource() ? start.forward_segment_id.id : start.reverse_segment_id.id;
+    const Vertex startVertex{0};
 
     // prepare graph data
     BaseGraph baseGraph{facade};
@@ -216,12 +217,28 @@ RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
     else
     {
         // no polygon provided
-        rig = buildRiGraph(baseGraph, s);
+        RoadClassFilter nodeFilter{facade};
+        nodeFilter.setResidentialRoads(allowResidentialRoads);
+        rig = buildRiGraph(baseGraph, s, nodeFilter);
     }
 
     if (!isValidGraph(rig))
     {
         Log(logERROR) << "Constructed RiGraph is invalid";
+        return {};
+    }
+
+#ifndef NDEBUG
+    rig.setLogger("ri_debug.geojson");
+    rig.logVertex(Vertex{0}, DebugFeatureType::START_NODE);
+#endif
+
+    // ensure single SCC without dead-ends
+    dropMinorSCCs(rig);
+
+    if (!isValidGraph(rig) || !isStronglyConnectedGraph(rig))
+    {
+        Log(logERROR) << "Constructed RiGraph is not strongly connected";
         return {};
     }
 
@@ -235,7 +252,7 @@ RouteInspectionResult routeInspection(const DataFacade<Algorithm> &facade,
     }
 
     // run route inspection from the source (0) vertex
-    const auto path = routeInspectionImpl(rig, Vertex{0});
+    const auto path = routeInspectionImpl(rig, startVertex);
 
     return prepareFinalRoute(rig, path);
 }
