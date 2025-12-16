@@ -49,6 +49,13 @@ struct CoordinateVectorToMultiPoint
                                   const std::optional<json::Object> &properties = {}) const;
 };
 
+struct CoordinateVectorsToMultiLineString
+{
+    // converts vectors of coords into a multilinestring geojson feature
+    util::json::Object operator()(const std::vector<std::vector<util::Coordinate>> &coordinates,
+                                  const std::optional<json::Object> &properties = {}) const;
+};
+
 } // namespace osrm::util
 
 #endif /* OSRM_GEOJSON_DEBUG_POLICIES */

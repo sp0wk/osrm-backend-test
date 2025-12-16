@@ -19,6 +19,8 @@ enum GeojsonStyleSize
     medium,
     large,
     extra_large,
+    xx_large,
+    xxx_large,
     num_styles
 };
 
@@ -32,14 +34,24 @@ enum GeojsonStyleColors
     cyan,
     brown,
     pink,
+    black,
+    orange,
     num_colors
 };
 
-const constexpr char *geojson_debug_predifined_colors[GeojsonStyleColors::num_colors] = {
-    "#FF4848", "#800080", "#5757FF", "#1FCB4A", "#FFE920", "#29AFD6", "#B05F3C", "#FE67EB"};
+const constexpr char *geojson_debug_predifined_colors[GeojsonStyleColors::num_colors] = {"#FF4848",
+                                                                                         "#800080",
+                                                                                         "#5757FF",
+                                                                                         "#1FCB4A",
+                                                                                         "#FFE920",
+                                                                                         "#29AFD6",
+                                                                                         "#B05F3C",
+                                                                                         "#FE67EB",
+                                                                                         "#000000",
+                                                                                         "#FFA500"};
 
 const constexpr double geojson_predefined_sizes[GeojsonStyleSize::num_styles] = {
-    2.0, 3.5, 5.0, 6.5, 8};
+    2.0, 3.5, 5.0, 6.5, 8, 16, 20};
 
 inline util::json::Object makeStyle(const GeojsonStyleSize size_type,
                                     const GeojsonStyleColors predefined_color)
@@ -47,6 +59,7 @@ inline util::json::Object makeStyle(const GeojsonStyleSize size_type,
     util::json::Object style;
     // style everything, since we don't know the feature type
     style.values["stroke"] = geojson_debug_predifined_colors[predefined_color];
+    style.values["stroke-width"] = geojson_predefined_sizes[size_type];
     style.values["circle-color"] = geojson_debug_predifined_colors[predefined_color];
     style.values["line-width"] = geojson_predefined_sizes[size_type];
     style.values["circle-radius"] = geojson_predefined_sizes[size_type];

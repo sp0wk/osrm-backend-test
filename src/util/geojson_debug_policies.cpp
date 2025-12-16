@@ -66,4 +66,18 @@ CoordinateVectorToLineString::operator()(const std::vector<util::Coordinate> &in
     return makeFeature("LineString", std::move(coordinates), properties);
 }
 
+//----------------------------------------------------------------
+util::json::Object CoordinateVectorsToMultiLineString::operator()(
+    const std::vector<std::vector<util::Coordinate>> &coordinates,
+    const std::optional<json::Object> &properties) const
+{
+    util::json::Array full;
+    full.values.reserve(coordinates.size());
+    for (const auto &line : coordinates)
+    {
+        full.values.emplace_back(makeJsonArray(line));
+    }
+    return makeFeature("MultiLineString", std::move(full), properties);
+}
+
 } // namespace osrm::util
