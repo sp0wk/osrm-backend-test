@@ -88,7 +88,7 @@ template <typename EdgeDataT> class DynamicGraph
         node_array.resize(number_of_nodes);
 
         edge_list.reserve(number_of_nodes * 1.1);
-        edge_list.resize(number_of_nodes);
+        edge_list.resize(number_of_nodes ? number_of_nodes - 1 : 0);
     }
 
     /**
@@ -260,10 +260,8 @@ template <typename EdgeDataT> class DynamicGraph
 
     NodeIterator InsertNode()
     {
-        node_array.emplace_back(node_array.back());
-        number_of_nodes += 1;
-
-        return number_of_nodes;
+        node_array.emplace_back();
+        return number_of_nodes++;
     }
 
     // adds an edge. Invalidates edge iterators for the source node
@@ -311,12 +309,13 @@ template <typename EdgeDataT> class DynamicGraph
         }
         // get the position for the edge that is to be inserted
         // and write it
-        Edge &edge = edge_list[node.first_edge + node.edges];
+        const auto idx = node.first_edge + node.edges;
+        Edge &edge = edge_list[idx];
         edge.target = to;
         edge.data = data;
         ++number_of_edges;
         ++node.edges;
-        return EdgeIterator(node.first_edge + node.edges);
+        return EdgeIterator(idx);
     }
 
     // removes an edge. Invalidates edge iterators for the source node
